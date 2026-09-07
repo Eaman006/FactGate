@@ -1,0 +1,794 @@
+"""FactGate — Fact Knowledge Layer Flask backend."""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+import google.generativeai as genai
+from pypdf import PdfReader
+from werkzeug.utils import secure_filename
+
+load_dotenv()
+
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_DIR = BASE_DIR / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+DATABASE_PATH = os.getenv("DATABASE_PATH", str(BASE_DIR / "factgate.db"))
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+CHUNK_CHAR_LIMIT = int(os.getenv("CHUNK_CHAR_LIMIT", "6000"))
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
+
+ALLOWED_RELATIONSHIPS = {
+    "corroborated",
+    "contradicted",
+    "context_resolved",
+    "needs_review",
+}
+
+SYSTEM_PROMPT = """You are FactLayer, an evidence-grounded fact extraction and relationship engine.
+
+Your job is to read document text, extract meaningful numerical or semantic facts, ground every fact in source evidence, and classify how facts relate across documents.
+
+RULES (strict):
+1. Extract only facts that are explicitly supported by the provided document text.
+2. Every fact MUST include at least one source object with:
+   - document_name: exact filename provided in the input
+   - page: integer page number from the input
+   - quote: an EXACT verbatim substring copied from the document text (do not paraphrase)
+3. Provide normalized_value (clean, comparable form) and original_value (as written in the source when different).
+4. Assign confidence as a float between 0 and 1.
+5. Assign relationship using EXACTLY one of these strings (no other values allowed):
+   - "corroborated" — multiple sources support the same fact (possibly different wording)
+   - "contradicted" — sources materially disagree about the same fact/entity/period with no adequate contextual explanation
+   - "context_resolved" — apparent disagreement is explained by context such as period, scope, units, or geography
+   - "needs_review" — extraction or reasoning is uncertain, low confidence, ambiguous, or failed
+6. Provide concise reasoning explaining the relationship classification.
+7. Provide context as an array of short strings (e.g. "Period: FY2025", "Unit: USD", "Scope: Consolidated").
+8. When comparing across documents, create separate fact records when sources disagree materially; link them through reasoning and shared names/topics.
+9. Never invent page numbers, quotes, values, or document names not present in the input.
+10. If evidence is weak or ambiguous, use relationship "needs_review" and explain uncertainty in review_notes or error_message.
+11. Return ONLY valid JSON matching the requested schema. No markdown fences or commentary.
+
+When input is a single chunk from one document, extract candidate facts from that chunk only.
+When input includes previously extracted candidates plus multiple documents, merge duplicates, compare across documents, and finalize relationship classifications."""
+
+EXTRACTION_USER_TEMPLATE = """Extract candidate facts from this document chunk.
+
+Document: {document_name}
+Pages covered: {page_range}
+
+Document text:
+\"\"\"
+{chunk_text}
+\"\"\"
+
+Return JSON:
+{{
+  "facts": [
+    {{
+      "name": "string",
+      "normalized_value": "string",
+      "original_value": "string or null",
+      "relationship": "corroborated|contradicted|context_resolved|needs_review",
+      "confidence": 0.0,
+      "reasoning": "string",
+      "context": ["string"],
+      "sources": [
+        {{
+          "document_name": "{document_name}",
+          "page": 1,
+          "quote": "exact quote from chunk"
+        }}
+      ],
+      "error_message": null,
+      "review_notes": null
+    }}
+  ]
+}}"""
+
+CONSOLIDATION_USER_TEMPLATE = """Consolidate and compare facts across ALL uploaded documents.
+
+Documents in corpus:
+{document_index}
+
+Previously extracted candidate facts (JSON):
+{candidate_facts_json}
+
+Instructions:
+- Merge duplicate facts referring to the same underlying claim when appropriate.
+- Compare facts across documents and assign final relationship classifications.
+- Preserve exact evidence quotes and page numbers from candidates when valid.
+- Split into separate fact records when sources materially disagree.
+- Use "context_resolved" when differences are explained by period, scope, units, or geography.
+- Use "needs_review" for low-confidence or ambiguous extractions.
+
+Return JSON:
+{{
+  "facts": [
+    {{
+      "name": "string",
+      "normalized_value": "string",
+      "original_value": "string or null",
+      "relationship": "corroborated|contradicted|context_resolved|needs_review",
+      "confidence": 0.0,
+      "reasoning": "string",
+      "context": ["string"],
+      "sources": [
+        {{
+          "document_name": "file.pdf",
+          "page": 1,
+          "quote": "exact quote"
+        }}
+      ],
+      "error_message": null,
+      "review_notes": null
+    }}
+  ]
+}}"""
+
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": ["http://localhost:3000"]}})
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def get_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DATABASE_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def init_db() -> None:
+    with get_db() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL UNIQUE,
+                uploaded_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'Complete',
+                page_count INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS document_pages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id INTEGER NOT NULL,
+                page_number INTEGER NOT NULL,
+                text_content TEXT NOT NULL,
+                FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+                UNIQUE(document_id, page_number)
+            );
+
+            CREATE TABLE IF NOT EXISTS facts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                normalized_value TEXT NOT NULL,
+                original_value TEXT,
+                relationship TEXT NOT NULL,
+                confidence REAL,
+                reasoning TEXT,
+                context_json TEXT,
+                error_message TEXT,
+                review_notes TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS fact_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fact_id TEXT NOT NULL,
+                document_name TEXT NOT NULL,
+                page_number INTEGER,
+                quote TEXT NOT NULL,
+                FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE
+            );
+            """
+        )
+
+
+def configure_gemini() -> None:
+    if not GEMINI_API_KEY:
+        raise RuntimeError(
+            "GEMINI_API_KEY is not set. Add it to Backend/.env before uploading PDFs."
+        )
+    genai.configure(api_key=GEMINI_API_KEY)
+
+
+def call_llm_json(system_prompt: str, user_prompt: str) -> dict[str, Any]:
+    configure_gemini()
+    model = genai.GenerativeModel(
+        model_name=GEMINI_MODEL,
+        system_instruction=system_prompt,
+        generation_config=genai.GenerationConfig(
+            temperature=0.1,
+            response_mime_type="application/json",
+        ),
+    )
+
+    response = model.generate_content(user_prompt)
+    content = response.text or "{}"
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"LLM returned invalid JSON: {exc}") from exc
+
+
+def extract_pdf_pages(file_path: Path) -> list[dict[str, Any]]:
+    reader = PdfReader(str(file_path))
+    pages: list[dict[str, Any]] = []
+
+    for index, page in enumerate(reader.pages, start=1):
+        text = (page.extract_text() or "").strip()
+        pages.append({"page": index, "text": text})
+
+    return pages
+
+
+def build_text_chunks(document_name: str, pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    chunks: list[dict[str, Any]] = []
+    buffer = ""
+    buffer_pages: list[int] = []
+
+    def flush() -> None:
+        nonlocal buffer, buffer_pages
+        if buffer.strip():
+            chunks.append(
+                {
+                    "document_name": document_name,
+                    "page_range": (
+                        f"{buffer_pages[0]}-{buffer_pages[-1]}"
+                        if len(buffer_pages) > 1
+                        else str(buffer_pages[0])
+                    ),
+                    "text": buffer.strip(),
+                }
+            )
+        buffer = ""
+        buffer_pages = []
+
+    for page in pages:
+        page_text = page["text"]
+        if not page_text:
+            continue
+
+        page_block = f"[Page {page['page']}]\n{page_text}\n\n"
+        if len(buffer) + len(page_block) > CHUNK_CHAR_LIMIT and buffer:
+            flush()
+
+        buffer += page_block
+        buffer_pages.append(page["page"])
+
+        if len(buffer) >= CHUNK_CHAR_LIMIT:
+            flush()
+
+    flush()
+    return chunks
+
+
+def sanitize_relationship(value: Any) -> str:
+    if not isinstance(value, str):
+        return "needs_review"
+
+    normalized = value.strip().lower().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "confirmed": "corroborated",
+        "supporting": "corroborated",
+        "conflict": "contradicted",
+        "contradiction": "contradicted",
+        "resolved": "context_resolved",
+        "contextually_resolved": "context_resolved",
+        "review": "needs_review",
+        "needsreview": "needs_review",
+        "error": "needs_review",
+        "failed": "needs_review",
+    }
+    normalized = aliases.get(normalized, normalized)
+
+    if normalized in ALLOWED_RELATIONSHIPS:
+        return normalized
+    return "needs_review"
+
+
+def sanitize_fact(raw: dict[str, Any]) -> dict[str, Any] | None:
+    name = str(raw.get("name") or raw.get("fact") or "").strip()
+    normalized_value = str(
+        raw.get("normalized_value") or raw.get("value") or ""
+    ).strip()
+
+    if not name or not normalized_value:
+        return None
+
+    sources_raw = raw.get("sources") or []
+    if not isinstance(sources_raw, list):
+        sources_raw = []
+
+    sources: list[dict[str, Any]] = []
+    for source in sources_raw:
+        if not isinstance(source, dict):
+            continue
+        document_name = str(
+            source.get("document_name")
+            or source.get("document")
+            or source.get("filename")
+            or ""
+        ).strip()
+        quote = str(
+            source.get("quote")
+            or source.get("snippet")
+            or source.get("evidence")
+            or ""
+        ).strip()
+        page = source.get("page") or source.get("page_number")
+        try:
+            page_number = int(page) if page is not None else None
+        except (TypeError, ValueError):
+            page_number = None
+
+        if document_name and quote:
+            sources.append(
+                {
+                    "document_name": document_name,
+                    "page": page_number,
+                    "quote": quote,
+                }
+            )
+
+    if not sources:
+        return None
+
+    confidence_raw = raw.get("confidence")
+    confidence: float | None
+    try:
+        confidence = float(confidence_raw) if confidence_raw is not None else None
+        if confidence is not None and confidence > 1:
+            confidence = confidence / 100
+    except (TypeError, ValueError):
+        confidence = None
+
+    context = raw.get("context") or []
+    if isinstance(context, dict):
+        context = [f"{k}: {v}" for k, v in context.items()]
+    elif not isinstance(context, list):
+        context = []
+
+    relationship = sanitize_relationship(
+        raw.get("relationship") or raw.get("relationship_type") or raw.get("status")
+    )
+
+    return {
+        "id": str(raw.get("id") or uuid.uuid4()),
+        "name": name,
+        "normalized_value": normalized_value,
+        "original_value": raw.get("original_value") or raw.get("extracted_value"),
+        "relationship": relationship,
+        "confidence": confidence,
+        "reasoning": str(raw.get("reasoning") or raw.get("explanation") or "").strip(),
+        "context": [str(item).strip() for item in context if str(item).strip()],
+        "sources": sources,
+        "error_message": raw.get("error_message") or raw.get("error"),
+        "review_notes": raw.get("review_notes"),
+    }
+
+
+def extract_facts_from_chunk(document_name: str, chunk: dict[str, Any]) -> list[dict[str, Any]]:
+    prompt = EXTRACTION_USER_TEMPLATE.format(
+        document_name=document_name,
+        page_range=chunk["page_range"],
+        chunk_text=chunk["text"],
+    )
+    payload = call_llm_json(SYSTEM_PROMPT, prompt)
+    facts_raw = payload.get("facts") or []
+    if not isinstance(facts_raw, list):
+        return []
+
+    facts: list[dict[str, Any]] = []
+    for item in facts_raw:
+        if not isinstance(item, dict):
+            continue
+        sanitized = sanitize_fact(item)
+        if sanitized:
+            facts.append(sanitized)
+    return facts
+
+
+def consolidate_facts(
+    candidate_facts: list[dict[str, Any]], documents: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    if not candidate_facts:
+        return []
+
+    document_index = "\n".join(
+        f"- {doc['filename']} ({doc['page_count']} pages, uploaded {doc['uploaded_at']})"
+        for doc in documents
+    )
+
+    prompt = CONSOLIDATION_USER_TEMPLATE.format(
+        document_index=document_index,
+        candidate_facts_json=json.dumps(candidate_facts, ensure_ascii=False),
+    )
+    payload = call_llm_json(SYSTEM_PROMPT, prompt)
+    facts_raw = payload.get("facts") or candidate_facts
+    if not isinstance(facts_raw, list):
+        facts_raw = candidate_facts
+
+    facts: list[dict[str, Any]] = []
+    for item in facts_raw:
+        if not isinstance(item, dict):
+            continue
+        sanitized = sanitize_fact(item)
+        if sanitized:
+            facts.append(sanitized)
+
+    return facts or candidate_facts
+
+
+def store_document(filename: str, pages: list[dict[str, Any]]) -> None:
+    uploaded_at = utc_now_iso()
+    with get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO documents (filename, uploaded_at, status, page_count)
+            VALUES (?, ?, 'Complete', ?)
+            ON CONFLICT(filename) DO UPDATE SET
+                uploaded_at = excluded.uploaded_at,
+                status = excluded.status,
+                page_count = excluded.page_count
+            """,
+            (filename, uploaded_at, len(pages)),
+        )
+        document_id = conn.execute(
+            "SELECT id FROM documents WHERE filename = ?", (filename,)
+        ).fetchone()["id"]
+
+        conn.execute(
+            "DELETE FROM document_pages WHERE document_id = ?", (document_id,)
+        )
+        conn.executemany(
+            """
+            INSERT INTO document_pages (document_id, page_number, text_content)
+            VALUES (?, ?, ?)
+            """,
+            [(document_id, page["page"], page["text"]) for page in pages],
+        )
+
+
+def replace_facts(facts: list[dict[str, Any]]) -> None:
+    with get_db() as conn:
+        conn.execute("DELETE FROM fact_sources")
+        conn.execute("DELETE FROM facts")
+
+        for fact in facts:
+            conn.execute(
+                """
+                INSERT INTO facts (
+                    id, name, normalized_value, original_value, relationship,
+                    confidence, reasoning, context_json, error_message, review_notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    fact["id"],
+                    fact["name"],
+                    fact["normalized_value"],
+                    fact.get("original_value"),
+                    fact["relationship"],
+                    fact.get("confidence"),
+                    fact.get("reasoning"),
+                    json.dumps(fact.get("context") or []),
+                    fact.get("error_message"),
+                    fact.get("review_notes"),
+                    utc_now_iso(),
+                ),
+            )
+
+            for source in fact.get("sources") or []:
+                conn.execute(
+                    """
+                    INSERT INTO fact_sources (fact_id, document_name, page_number, quote)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        fact["id"],
+                        source["document_name"],
+                        source.get("page"),
+                        source["quote"],
+                    ),
+                )
+
+
+def fetch_documents() -> list[sqlite3.Row]:
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM documents ORDER BY uploaded_at DESC"
+        ).fetchall()
+
+
+def fetch_facts_with_sources() -> list[dict[str, Any]]:
+    with get_db() as conn:
+        fact_rows = conn.execute(
+            "SELECT * FROM facts ORDER BY created_at DESC"
+        ).fetchall()
+
+        facts: list[dict[str, Any]] = []
+        for row in fact_rows:
+            sources = conn.execute(
+                """
+                SELECT document_name, page_number, quote
+                FROM fact_sources
+                WHERE fact_id = ?
+                ORDER BY id ASC
+                """,
+                (row["id"],),
+            ).fetchall()
+
+            primary_source = sources[0]["document_name"] if sources else ""
+            primary_quote = sources[0]["quote"] if sources else ""
+
+            facts.append(
+                {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "normalized_value": row["normalized_value"],
+                    "original_value": row["original_value"],
+                    "relationship": row["relationship"],
+                    "confidence": row["confidence"],
+                    "reasoning": row["reasoning"] or "",
+                    "context": json.loads(row["context_json"] or "[]"),
+                    "sources": [
+                        {
+                            "document_name": source["document_name"],
+                            "page": source["page_number"],
+                            "quote": source["quote"],
+                        }
+                        for source in sources
+                    ],
+                    "source": primary_source,
+                    "snippet": primary_quote,
+                    "error_message": row["error_message"],
+                    "review_notes": row["review_notes"],
+                }
+            )
+
+        return facts
+
+
+def build_summary(facts: list[dict[str, Any]], documents: list[sqlite3.Row]) -> dict[str, int]:
+    corroborated = sum(1 for f in facts if f["relationship"] == "corroborated")
+    contradicted = sum(1 for f in facts if f["relationship"] == "contradicted")
+    resolved = sum(1 for f in facts if f["relationship"] == "context_resolved")
+    needs_review = sum(1 for f in facts if f["relationship"] == "needs_review")
+
+    complete_documents = sum(1 for d in documents if d["status"] == "Complete")
+    processing_documents = sum(1 for d in documents if d["status"] == "Processing")
+
+    grounded = sum(
+        1
+        for fact in facts
+        for source in fact.get("sources") or []
+        if source.get("quote")
+    )
+    total_sources = sum(len(fact.get("sources") or []) for fact in facts)
+    groundedness_score = (
+        round((grounded / total_sources) * 100) if total_sources else None
+    )
+
+    return {
+        "total_facts": len(facts),
+        "total_documents": len(documents),
+        "complete_documents": complete_documents,
+        "processing_documents": processing_documents,
+        "relationships_found": corroborated + contradicted + resolved,
+        "corroborated": corroborated,
+        "resolved": resolved,
+        "contradicted": contradicted,
+        "needs_review": needs_review,
+        "groundedness_score": groundedness_score,
+    }
+
+
+def build_document_stats(
+    documents: list[sqlite3.Row], facts: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    stats: list[dict[str, Any]] = []
+
+    for doc in documents:
+        related_facts = [
+            fact
+            for fact in facts
+            if any(
+                source.get("document_name") == doc["filename"]
+                for source in fact.get("sources") or []
+            )
+        ]
+        issues = sum(
+            1
+            for fact in related_facts
+            if fact["relationship"] in {"contradicted", "needs_review"}
+        )
+        relationships = sum(
+            1
+            for fact in related_facts
+            if fact["relationship"] != "needs_review"
+        )
+
+        stats.append(
+            {
+                "name": doc["filename"],
+                "filename": doc["filename"],
+                "status": doc["status"],
+                "uploaded_at": doc["uploaded_at"],
+                "date": doc["uploaded_at"],
+                "facts": len(related_facts),
+                "facts_count": len(related_facts),
+                "issues": issues,
+                "review_count": issues,
+                "relationships": relationships,
+                "relationship_count": relationships,
+            }
+        )
+
+    return stats
+
+
+def is_pdf_file(filename: str) -> bool:
+    return filename.lower().endswith(".pdf")
+
+
+def validate_pdf_upload(file_storage) -> tuple[bool, str]:
+    if not file_storage or not file_storage.filename:
+        return False, "Missing filename"
+
+    filename = secure_filename(file_storage.filename)
+    if not is_pdf_file(filename):
+        return False, "Only PDF files are supported"
+
+    file_storage.stream.seek(0, os.SEEK_END)
+    size_mb = file_storage.stream.tell() / (1024 * 1024)
+    file_storage.stream.seek(0)
+
+    if size_mb > MAX_UPLOAD_MB:
+        return False, f"{filename} exceeds {MAX_UPLOAD_MB} MB limit"
+
+    return True, filename
+
+
+@app.get("/health")
+def health():
+    return jsonify({"status": "ok", "service": "factgate"})
+
+
+@app.get("/facts")
+def get_facts():
+    documents = fetch_documents()
+    facts = fetch_facts_with_sources()
+    summary = build_summary(facts, documents)
+    document_stats = build_document_stats(documents, facts)
+
+    return jsonify(
+        {
+            "facts": facts,
+            "documents": document_stats,
+            "summary": summary,
+        }
+    )
+
+
+@app.post("/upload")
+def upload_pdfs():
+    uploaded_files = request.files.getlist("files")
+    if not uploaded_files:
+        return jsonify({"error": "No files provided. Use form field name 'files'."}), 400
+
+    saved_files: list[str] = []
+    candidate_facts: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    for file_storage in uploaded_files:
+        valid, result = validate_pdf_upload(file_storage)
+        if not valid:
+            errors.append(result)
+            continue
+
+        filename = result
+        save_path = UPLOAD_DIR / filename
+        file_storage.save(save_path)
+
+        try:
+            pages = extract_pdf_pages(save_path)
+            if not any(page["text"] for page in pages):
+                errors.append(f"{filename}: no extractable text found")
+                continue
+
+            store_document(filename, pages)
+            saved_files.append(filename)
+
+            chunks = build_text_chunks(filename, pages)
+            for chunk in chunks:
+                try:
+                    chunk_facts = extract_facts_from_chunk(filename, chunk)
+                    candidate_facts.extend(chunk_facts)
+                except Exception as exc:  # noqa: BLE001 — surface per-chunk LLM failures
+                    errors.append(f"{filename} chunk {chunk['page_range']}: {exc}")
+
+        except Exception as exc:  # noqa: BLE001 — keep batch upload resilient
+            errors.append(f"{filename}: {exc}")
+
+    if not saved_files:
+        return (
+            jsonify(
+                {
+                    "error": "No PDFs were processed successfully.",
+                    "details": errors,
+                }
+            ),
+            400,
+        )
+
+    documents = fetch_documents()
+    final_facts: list[dict[str, Any]] = []
+
+    try:
+        if candidate_facts:
+            final_facts = consolidate_facts(
+                candidate_facts,
+                [dict(row) for row in documents],
+            )
+        replace_facts(final_facts)
+    except Exception as exc:  # noqa: BLE001
+        review_fact = {
+            "id": str(uuid.uuid4()),
+            "name": "Extraction pipeline",
+            "normalized_value": "Failed",
+            "original_value": None,
+            "relationship": "needs_review",
+            "confidence": 0.0,
+            "reasoning": "The backend could not finalize fact extraction.",
+            "context": ["Action: Review logs"],
+            "sources": [
+                {
+                    "document_name": saved_files[0],
+                    "page": 1,
+                    "quote": "Processing error — see review notes.",
+                }
+            ],
+            "error_message": str(exc),
+            "review_notes": "; ".join(errors) if errors else str(exc),
+        }
+        final_facts = [review_fact]
+        replace_facts(final_facts)
+
+    message = (
+        f"Processed {len(saved_files)} document(s) and extracted {len(final_facts)} fact(s)."
+    )
+    if errors:
+        message += f" {len(errors)} warning(s) occurred during processing."
+
+    return jsonify(
+        {
+            "message": message,
+            "uploaded_files": saved_files,
+            "documents_processed": len(saved_files),
+            "facts_extracted": len(final_facts),
+            "warnings": errors,
+        }
+    )
+
+
+if __name__ == "__main__":
+    init_db()
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=True)
+else:
+    init_db()

@@ -74,3 +74,18 @@ function extractErrorMessage(payload: unknown): string | null {
 
   return null
 }
+
+export async function deleteDocument(
+  filename: string,
+): Promise<{ message: string; filename: string }> {
+  return apiRequest<{ message: string; filename: string }>(
+    `/documents/${encodeURIComponent(filename)}`,
+    { method: 'DELETE' },
+  )
+}
+
+export async function checkHealth(): Promise<{ status: string; service?: string }> {
+  return apiRequest<{ status: string; service?: string }>('/health')
+}
+
+

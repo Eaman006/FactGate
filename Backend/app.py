@@ -26,7 +26,6 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 DATABASE_PATH = os.getenv("DATABASE_PATH", str(BASE_DIR / "factgate.db"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
-CHUNK_CHAR_LIMIT = int(os.getenv("CHUNK_CHAR_LIMIT", "6000"))
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
 
 ALLOWED_RELATIONSHIPS = {
@@ -60,17 +59,17 @@ RULES (strict):
 10. If evidence is weak or ambiguous, use relationship "needs_review" and explain uncertainty in review_notes or error_message.
 11. Return ONLY valid JSON matching the requested schema. No markdown fences or commentary.
 
-When input is a single chunk from one document, extract candidate facts from that chunk only.
+When input is a single document, extract candidate facts from that document only.
 When input includes previously extracted candidates plus multiple documents, merge duplicates, compare across documents, and finalize relationship classifications."""
 
-EXTRACTION_USER_TEMPLATE = """Extract candidate facts from this document chunk.
+EXTRACTION_USER_TEMPLATE = """Extract candidate facts from this complete document.
 
 Document: {document_name}
 Pages covered: {page_range}
 
 Document text:
 \"\"\"
-{chunk_text}
+{document_text}
 \"\"\"
 
 Return JSON:
@@ -88,7 +87,7 @@ Return JSON:
         {{
           "document_name": "{document_name}",
           "page": 1,
-          "quote": "exact quote from chunk"
+          "quote": "exact quote from document"
         }}
       ],
       "error_message": null,
@@ -207,6 +206,22 @@ def configure_gemini() -> None:
     genai.configure(api_key=GEMINI_API_KEY)
 
 
+def clean_json_response(text: str) -> str:
+    """Strip markdown code fences and whitespace from LLM JSON responses."""
+    cleaned = text.strip()
+    if not cleaned.startswith("```"):
+        return cleaned
+
+    cleaned = cleaned[3:].lstrip()
+    if cleaned.lower().startswith("json"):
+        cleaned = cleaned[4:].lstrip()
+
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3].rstrip()
+
+    return cleaned.strip()
+
+
 def call_llm_json(system_prompt: str, user_prompt: str) -> dict[str, Any]:
     configure_gemini()
     model = genai.GenerativeModel(
@@ -218,8 +233,13 @@ def call_llm_json(system_prompt: str, user_prompt: str) -> dict[str, Any]:
         ),
     )
 
-    response = model.generate_content(user_prompt)
-    content = response.text or "{}"
+    response = model.generate_content(
+        user_prompt,
+        generation_config={"response_mime_type": "application/json"},
+    )
+    print(response.text)
+
+    content = clean_json_response(response.text or "{}")
     try:
         return json.loads(content)
     except json.JSONDecodeError as exc:
@@ -237,45 +257,21 @@ def extract_pdf_pages(file_path: Path) -> list[dict[str, Any]]:
     return pages
 
 
-def build_text_chunks(document_name: str, pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    chunks: list[dict[str, Any]] = []
-    buffer = ""
-    buffer_pages: list[int] = []
+def combine_pages_to_text(pages: list[dict[str, Any]]) -> tuple[str, str]:
+    non_empty_pages = [page for page in pages if page["text"]]
+    if not non_empty_pages:
+        return "", ""
 
-    def flush() -> None:
-        nonlocal buffer, buffer_pages
-        if buffer.strip():
-            chunks.append(
-                {
-                    "document_name": document_name,
-                    "page_range": (
-                        f"{buffer_pages[0]}-{buffer_pages[-1]}"
-                        if len(buffer_pages) > 1
-                        else str(buffer_pages[0])
-                    ),
-                    "text": buffer.strip(),
-                }
-            )
-        buffer = ""
-        buffer_pages = []
-
-    for page in pages:
-        page_text = page["text"]
-        if not page_text:
-            continue
-
-        page_block = f"[Page {page['page']}]\n{page_text}\n\n"
-        if len(buffer) + len(page_block) > CHUNK_CHAR_LIMIT and buffer:
-            flush()
-
-        buffer += page_block
-        buffer_pages.append(page["page"])
-
-        if len(buffer) >= CHUNK_CHAR_LIMIT:
-            flush()
-
-    flush()
-    return chunks
+    page_numbers = [page["page"] for page in non_empty_pages]
+    page_range = (
+        f"{page_numbers[0]}-{page_numbers[-1]}"
+        if len(page_numbers) > 1
+        else str(page_numbers[0])
+    )
+    document_text = "\n\n".join(
+        f"[Page {page['page']}]\n{page['text']}" for page in non_empty_pages
+    )
+    return document_text, page_range
 
 
 def sanitize_relationship(value: Any) -> str:
@@ -383,11 +379,13 @@ def sanitize_fact(raw: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def extract_facts_from_chunk(document_name: str, chunk: dict[str, Any]) -> list[dict[str, Any]]:
+def extract_facts_from_document(
+    document_name: str, document_text: str, page_range: str
+) -> list[dict[str, Any]]:
     prompt = EXTRACTION_USER_TEMPLATE.format(
         document_name=document_name,
-        page_range=chunk["page_range"],
-        chunk_text=chunk["text"],
+        page_range=page_range,
+        document_text=document_text,
     )
     payload = call_llm_json(SYSTEM_PROMPT, prompt)
     facts_raw = payload.get("facts") or []
@@ -714,13 +712,14 @@ def upload_pdfs():
             store_document(filename, pages)
             saved_files.append(filename)
 
-            chunks = build_text_chunks(filename, pages)
-            for chunk in chunks:
-                try:
-                    chunk_facts = extract_facts_from_chunk(filename, chunk)
-                    candidate_facts.extend(chunk_facts)
-                except Exception as exc:  # noqa: BLE001 — surface per-chunk LLM failures
-                    errors.append(f"{filename} chunk {chunk['page_range']}: {exc}")
+            document_text, page_range = combine_pages_to_text(pages)
+            try:
+                document_facts = extract_facts_from_document(
+                    filename, document_text, page_range
+                )
+                candidate_facts.extend(document_facts)
+            except Exception as exc:  # noqa: BLE001 — surface per-document LLM failures
+                errors.append(f"{filename}: {exc}")
 
         except Exception as exc:  # noqa: BLE001 — keep batch upload resilient
             errors.append(f"{filename}: {exc}")
@@ -786,9 +785,64 @@ def upload_pdfs():
     )
 
 
+@app.delete("/documents/<path:filename>")
+def delete_document(filename: str):
+    from urllib.parse import unquote
+    clean_filename = unquote(filename).strip()
+
+    with get_db() as conn:
+        doc = conn.execute(
+            "SELECT id FROM documents WHERE filename = ? OR filename = ?",
+            (clean_filename, filename),
+        ).fetchone()
+
+        target_name = clean_filename if doc else filename
+
+        cursor = conn.execute(
+            "SELECT DISTINCT fact_id FROM fact_sources WHERE document_name = ? OR document_name = ?",
+            (target_name, filename),
+        )
+        fact_ids = [row["fact_id"] for row in cursor.fetchall()]
+
+        conn.execute(
+            "DELETE FROM documents WHERE filename = ? OR filename = ?",
+            (target_name, filename),
+        )
+
+        conn.execute(
+            "DELETE FROM fact_sources WHERE document_name = ? OR document_name = ?",
+            (target_name, filename),
+        )
+
+        for fact_id in fact_ids:
+            remaining = conn.execute(
+                "SELECT COUNT(*) as count FROM fact_sources WHERE fact_id = ?",
+                (fact_id,),
+            ).fetchone()["count"]
+            if remaining == 0:
+                conn.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
+
+        conn.commit()
+
+    file_path = UPLOAD_DIR / target_name
+    if file_path.exists() and file_path.is_file():
+        try:
+            file_path.unlink()
+        except OSError as exc:
+            print(f"Warning: Failed to delete file {file_path}: {exc}")
+
+    return jsonify(
+        {
+            "message": f"Document '{target_name}' deleted successfully.",
+            "filename": target_name,
+        }
+    ), 200
+
+
 if __name__ == "__main__":
     init_db()
     port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port, debug=True)
 else:
     init_db()
+

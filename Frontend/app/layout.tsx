@@ -16,8 +16,8 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className="h-full overflow-hidden bg-background">
-      <body className="h-full overflow-hidden antialiased">
+    <html lang="en" className="scroll-smooth bg-background">
+      <body className="min-h-screen antialiased">
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>

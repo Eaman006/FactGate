@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   Building2,
   Check,
@@ -24,7 +25,8 @@ import { cn } from '@/lib/utils'
 import type { FactFilter, FactStatus } from '@/lib/types'
 import { STATUS_META } from '@/lib/types'
 
-export type View = 'overview' | 'documents' | 'facts' | 'relationships'
+export type View = 'overview' | 'documents' | 'facts' | 'relationships' | 'settings'
+
 
 const NAV_ITEMS: { id: View; label: string; icon: React.ElementType }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -60,6 +62,7 @@ export function Sidebar({
   totalFacts,
   onNotify,
 }: SidebarProps) {
+  const router = useRouter()
   const [selectedWorkspace, setSelectedWorkspace] = useState('Acme Corp')
   const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false)
   const [showUserMenu, setShowUserMenu] = useState(false)
@@ -282,15 +285,22 @@ export function Sidebar({
         <button
           type="button"
           title="Workspace settings"
-          onClick={() => onNotify?.('Workspace settings opened')}
+          onClick={() => {
+            onViewChange('settings')
+            onCloseMobile()
+          }}
           className={cn(
-            'flex w-full items-center rounded-md py-2 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
+            'flex w-full items-center rounded-md py-2 text-sm transition-colors',
             collapsed ? 'justify-center px-0' : 'gap-3 px-3',
+            currentView === 'settings'
+              ? 'bg-sidebar-accent font-semibold text-sidebar-accent-foreground ring-1 ring-primary/20'
+              : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
           )}
         >
           <Settings2 className="size-4 shrink-0" />
           {!collapsed && 'Workspace settings'}
         </button>
+
 
         {!collapsed ? (
           <button
@@ -369,6 +379,7 @@ export function Sidebar({
               onClick={() => {
                 setShowUserMenu(false)
                 onNotify?.('User logged out')
+                router.push('/login')
               }}
               className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 transition-colors"
             >

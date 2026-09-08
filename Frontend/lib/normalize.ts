@@ -92,9 +92,22 @@ function normalizeSourceEvidence(
     return null
   }
 
+  const rawPageNum = input.page_number ?? input.page
+  let pageNum: number | string | null = null
+  if (typeof rawPageNum === 'number') {
+    pageNum = rawPageNum
+  } else if (typeof rawPageNum === 'string') {
+    const match = rawPageNum.match(/\d+/)
+    if (match) {
+      pageNum = parseInt(match[0], 10)
+    }
+  }
+
   return {
     documentName: documentName || FALLBACK_SOURCE,
+    document_name: documentName || FALLBACK_SOURCE,
     page: formatPage(input.page ?? input.page_number),
+    page_number: pageNum,
     quote: quote || FALLBACK_SNIPPET,
     context: normalizeContext(input.context ?? undefined),
   }

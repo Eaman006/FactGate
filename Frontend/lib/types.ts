@@ -15,7 +15,9 @@ export type FactFilter = 'All' | FactStatus
 
 export interface SourceEvidence {
   documentName: string
+  document_name?: string
   page: string | null
+  page_number?: number | string | null
   quote: string
   context?: string[]
 }

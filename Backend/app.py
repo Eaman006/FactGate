@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 import google.generativeai as genai
 from pypdf import PdfReader
@@ -837,6 +837,12 @@ def delete_document(filename: str):
             "filename": target_name,
         }
     ), 200
+
+
+@app.route("/uploads/<path:filename>")
+def serve_upload(filename: str):
+    uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "uploads"))
+    return send_from_directory(uploads_dir, filename)
 
 
 if __name__ == "__main__":

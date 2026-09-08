@@ -36,6 +36,7 @@ export interface SelectedUploadFile {
 }
 
 interface UseUploadOptions {
+  userUid?: string | null
   onSuccess?: (response: UploadResponse) => void | Promise<void>
 }
 
@@ -177,7 +178,7 @@ export function useUpload(options: UseUploadOptions = {}): UseUploadResult {
 
     try {
       await runVisualStages(label)
-      const response = await uploadPdfs(selectedFiles.map((item) => item.file))
+      const response = await uploadPdfs(selectedFiles.map((item) => item.file), options.userUid)
 
       setStage('complete')
       setProgress(100)

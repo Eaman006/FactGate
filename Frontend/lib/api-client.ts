@@ -26,12 +26,23 @@ async function parseJsonSafe(response: Response): Promise<unknown> {
 export async function apiRequest<T>(
   path: string,
   init?: RequestInit,
+  userUid?: string | null,
 ): Promise<T> {
   const url = `${API_BASE_URL}${path}`
 
+  const headers = new Headers(init?.headers || {})
+  if (userUid) {
+    headers.set('Authorization', `Bearer ${userUid}`)
+  }
+
+  const requestOptions: RequestInit = {
+    ...init,
+    headers,
+  }
+
   let response: Response
   try {
-    response = await fetch(url, init)
+    response = await fetch(url, requestOptions)
   } catch (error) {
     const message =
       error instanceof Error

@@ -45,7 +45,11 @@ import { UploadZone } from '@/components/upload-zone'
 import { useFacts } from '@/hooks/use-facts'
 import { useSidebar } from '@/hooks/use-sidebar'
 import { useUpload } from '@/hooks/use-upload'
-import { checkHealth, deleteDocument } from '@/lib/api-client'
+import { deleteDocument } from '@/lib/api'
+import { checkHealth } from '@/lib/api-client'
+import { auth } from '@/lib/firebase'
+import { onAuthStateChanged, type User } from 'firebase/auth'
+import { useRouter } from 'next/navigation'
 import { factMatchesSearch, getFactDetailSources } from '@/lib/normalize'
 import { statusToTone } from '@/lib/status'
 import type { Fact, FactFilter, FactStatus, FactsSummary } from '@/lib/types'
@@ -187,8 +191,39 @@ function getRepresentativeFact(facts: Fact[], status: FactStatus): Fact | null {
   return facts.find((fact) => fact.status === status) ?? null
 }
 
+function getUserGreetingName(displayName?: string | null): string {
+  if (!displayName || !displayName.trim()) return 'Analyst'
+  const parts = displayName.trim().split(/\s+/)
+  if (parts.length === 0) return 'Analyst'
+
+  const firstClean = parts[0].replace(/[^a-zA-Z]/g, '').toLowerCase()
+  if (firstClean === 'md' && parts.length > 1) {
+    const target = parts[1]
+    return target.charAt(0).toUpperCase() + target.slice(1).toLowerCase()
+  }
+
+  const target = parts[0]
+  return target.charAt(0).toUpperCase() + target.slice(1).toLowerCase()
+}
+
 export default function Page() {
-  const { data, loading, isRefetching, error, usingMockFallback, refetch } = useFacts()
+  const router = useRouter()
+  const [currentUser, setCurrentUser] = useState<User | null>(null)
+  const [authLoading, setAuthLoading] = useState(true)
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user)
+      setAuthLoading(false)
+      if (!user) {
+        router.push('/login')
+      }
+    })
+
+    return () => unsubscribe()
+  }, [router])
+
+  const { data, loading, isRefetching, error, usingMockFallback, refetch } = useFacts(currentUser?.uid)
   const sidebar = useSidebar()
   const [currentView, setCurrentView] = useState<View>('overview')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -405,7 +440,7 @@ export default function Page() {
     if (deletingDoc) return
     setDeletingDoc(filename)
     try {
-      const res = await deleteDocument(filename)
+      const res = await deleteDocument(filename, currentUser?.uid)
       notify(res.message || `Document '${filename}' deleted.`)
       setNotifications((prev) => [
         {
@@ -725,6 +760,19 @@ export default function Page() {
   const showEmpty = !loading && !error && facts.length === 0
   const showError = !loading && !!error && !facts.length && !usingMockFallback
 
+  if (authLoading) {
+    return (
+      <div className="flex h-screen w-full flex-col items-center justify-center bg-background text-foreground">
+        <RefreshCw className="size-8 animate-spin text-primary" />
+        <p className="mt-4 text-xs font-medium text-muted-foreground">Checking authentication state...</p>
+      </div>
+    )
+  }
+
+  if (!currentUser) {
+    return null
+  }
+
   return (
     <div className="flex h-svh overflow-hidden bg-background text-foreground">
       <Sidebar
@@ -744,6 +792,7 @@ export default function Page() {
         statusCounts={statusCounts}
         totalFacts={facts.length}
         onNotify={notify}
+        user={currentUser}
       />
       {sidebar.mobileOpen && (
         <button
@@ -1060,7 +1109,9 @@ export default function Page() {
                           <ShieldCheck className="size-3.5" />
                           Evidence-grounded intelligence
                         </div>
-                        <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">Good morning, Eaman</h2>
+                        <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">
+                          Good morning, {getUserGreetingName(currentUser?.displayName)}
+                        </h2>
                         <p className="mt-1 text-sm text-muted-foreground">
                           {loading
                             ? 'Loading your knowledge layer…'

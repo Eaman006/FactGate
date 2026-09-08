@@ -144,6 +144,20 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def get_user_id() -> str:
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            return token
+
+    custom_uid = request.headers.get("X-User-ID", "").strip()
+    if custom_uid:
+        return custom_uid
+
+    return "default_user"
+
+
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
@@ -157,10 +171,12 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS documents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                filename TEXT NOT NULL UNIQUE,
+                user_id TEXT NOT NULL DEFAULT 'default_user',
+                filename TEXT NOT NULL,
                 uploaded_at TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'Complete',
-                page_count INTEGER NOT NULL DEFAULT 0
+                page_count INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(user_id, filename)
             );
 
             CREATE TABLE IF NOT EXISTS document_pages (
@@ -174,6 +190,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS facts (
                 id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL DEFAULT 'default_user',
                 name TEXT NOT NULL,
                 normalized_value TEXT NOT NULL,
                 original_value TEXT,
@@ -196,6 +213,22 @@ def init_db() -> None:
             );
             """
         )
+
+        cursor = conn.execute("PRAGMA table_info(documents)")
+        cols = [row["name"] for row in cursor.fetchall()]
+        if "user_id" not in cols:
+            conn.execute(
+                "ALTER TABLE documents ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default_user'"
+            )
+
+        cursor = conn.execute("PRAGMA table_info(facts)")
+        cols = [row["name"] for row in cursor.fetchall()]
+        if "user_id" not in cols:
+            conn.execute(
+                "ALTER TABLE facts ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default_user'"
+            )
+
+        conn.commit()
 
 
 def configure_gemini() -> None:
@@ -433,22 +466,25 @@ def consolidate_facts(
     return facts or candidate_facts
 
 
-def store_document(filename: str, pages: list[dict[str, Any]]) -> None:
+def store_document(
+    filename: str, pages: list[dict[str, Any]], user_id: str = "default_user"
+) -> None:
     uploaded_at = utc_now_iso()
     with get_db() as conn:
         conn.execute(
             """
-            INSERT INTO documents (filename, uploaded_at, status, page_count)
-            VALUES (?, ?, 'Complete', ?)
-            ON CONFLICT(filename) DO UPDATE SET
+            INSERT INTO documents (user_id, filename, uploaded_at, status, page_count)
+            VALUES (?, ?, ?, 'Complete', ?)
+            ON CONFLICT(user_id, filename) DO UPDATE SET
                 uploaded_at = excluded.uploaded_at,
                 status = excluded.status,
                 page_count = excluded.page_count
             """,
-            (filename, uploaded_at, len(pages)),
+            (user_id, filename, uploaded_at, len(pages)),
         )
         document_id = conn.execute(
-            "SELECT id FROM documents WHERE filename = ?", (filename,)
+            "SELECT id FROM documents WHERE user_id = ? AND filename = ?",
+            (user_id, filename),
         ).fetchone()["id"]
 
         conn.execute(
@@ -463,21 +499,27 @@ def store_document(filename: str, pages: list[dict[str, Any]]) -> None:
         )
 
 
-def replace_facts(facts: list[dict[str, Any]]) -> None:
+def replace_facts(
+    facts: list[dict[str, Any]], user_id: str = "default_user"
+) -> None:
     with get_db() as conn:
-        conn.execute("DELETE FROM fact_sources")
-        conn.execute("DELETE FROM facts")
+        conn.execute(
+            "DELETE FROM fact_sources WHERE fact_id IN (SELECT id FROM facts WHERE user_id = ?)",
+            (user_id,),
+        )
+        conn.execute("DELETE FROM facts WHERE user_id = ?", (user_id,))
 
         for fact in facts:
             conn.execute(
                 """
                 INSERT INTO facts (
-                    id, name, normalized_value, original_value, relationship,
+                    id, user_id, name, normalized_value, original_value, relationship,
                     confidence, reasoning, context_json, error_message, review_notes, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fact["id"],
+                    user_id,
                     fact["name"],
                     fact["normalized_value"],
                     fact.get("original_value"),
@@ -506,17 +548,19 @@ def replace_facts(facts: list[dict[str, Any]]) -> None:
                 )
 
 
-def fetch_documents() -> list[sqlite3.Row]:
+def fetch_documents(user_id: str = "default_user") -> list[sqlite3.Row]:
     with get_db() as conn:
         return conn.execute(
-            "SELECT * FROM documents ORDER BY uploaded_at DESC"
+            "SELECT * FROM documents WHERE user_id = ? ORDER BY uploaded_at DESC",
+            (user_id,),
         ).fetchall()
 
 
-def fetch_facts_with_sources() -> list[dict[str, Any]]:
+def fetch_facts_with_sources(user_id: str = "default_user") -> list[dict[str, Any]]:
     with get_db() as conn:
         fact_rows = conn.execute(
-            "SELECT * FROM facts ORDER BY created_at DESC"
+            "SELECT * FROM facts WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
         ).fetchall()
 
         facts: list[dict[str, Any]] = []
@@ -605,15 +649,13 @@ def build_document_stats(
         related_facts = [
             fact
             for fact in facts
-            if any(
-                source.get("document_name") == doc["filename"]
-                for source in fact.get("sources") or []
-            )
+            for source in fact.get("sources") or []
+            if source.get("document_name") == doc["filename"]
         ]
         issues = sum(
             1
             for fact in related_facts
-            if fact["relationship"] in {"contradicted", "needs_review"}
+            if fact["relationship"] == "needs_review" or fact.get("error_message")
         )
         relationships = sum(
             1
@@ -669,8 +711,9 @@ def health():
 
 @app.get("/facts")
 def get_facts():
-    documents = fetch_documents()
-    facts = fetch_facts_with_sources()
+    user_id = get_user_id()
+    documents = fetch_documents(user_id)
+    facts = fetch_facts_with_sources(user_id)
     summary = build_summary(facts, documents)
     document_stats = build_document_stats(documents, facts)
 
@@ -685,6 +728,7 @@ def get_facts():
 
 @app.post("/upload")
 def upload_pdfs():
+    user_id = get_user_id()
     uploaded_files = request.files.getlist("files")
     if not uploaded_files:
         return jsonify({"error": "No files provided. Use form field name 'files'."}), 400
@@ -709,7 +753,7 @@ def upload_pdfs():
                 errors.append(f"{filename}: no extractable text found")
                 continue
 
-            store_document(filename, pages)
+            store_document(filename, pages, user_id)
             saved_files.append(filename)
 
             document_text, page_range = combine_pages_to_text(pages)
@@ -735,7 +779,7 @@ def upload_pdfs():
             400,
         )
 
-    documents = fetch_documents()
+    documents = fetch_documents(user_id)
     final_facts: list[dict[str, Any]] = []
 
     try:
@@ -744,7 +788,7 @@ def upload_pdfs():
                 candidate_facts,
                 [dict(row) for row in documents],
             )
-        replace_facts(final_facts)
+        replace_facts(final_facts, user_id)
     except Exception as exc:  # noqa: BLE001
         review_fact = {
             "id": str(uuid.uuid4()),
@@ -766,7 +810,7 @@ def upload_pdfs():
             "review_notes": "; ".join(errors) if errors else str(exc),
         }
         final_facts = [review_fact]
-        replace_facts(final_facts)
+        replace_facts(final_facts, user_id)
 
     message = (
         f"Processed {len(saved_files)} document(s) and extracted {len(final_facts)} fact(s)."
@@ -787,40 +831,32 @@ def upload_pdfs():
 
 @app.delete("/documents/<path:filename>")
 def delete_document(filename: str):
+    user_id = get_user_id()
     from urllib.parse import unquote
     clean_filename = unquote(filename).strip()
 
     with get_db() as conn:
         doc = conn.execute(
-            "SELECT id FROM documents WHERE filename = ? OR filename = ?",
-            (clean_filename, filename),
+            "SELECT id FROM documents WHERE user_id = ? AND (filename = ? OR filename = ?)",
+            (user_id, clean_filename, filename),
         ).fetchone()
 
         target_name = clean_filename if doc else filename
 
         cursor = conn.execute(
-            "SELECT DISTINCT fact_id FROM fact_sources WHERE document_name = ? OR document_name = ?",
-            (target_name, filename),
+            "SELECT DISTINCT fs.fact_id FROM fact_sources fs JOIN facts f ON fs.fact_id = f.id WHERE f.user_id = ? AND (fs.document_name = ? OR fs.document_name = ?)",
+            (user_id, target_name, filename),
         )
         fact_ids = [row["fact_id"] for row in cursor.fetchall()]
 
         conn.execute(
-            "DELETE FROM documents WHERE filename = ? OR filename = ?",
-            (target_name, filename),
-        )
-
-        conn.execute(
-            "DELETE FROM fact_sources WHERE document_name = ? OR document_name = ?",
-            (target_name, filename),
+            "DELETE FROM documents WHERE user_id = ? AND (filename = ? OR filename = ?)",
+            (user_id, target_name, filename),
         )
 
         for fact_id in fact_ids:
-            remaining = conn.execute(
-                "SELECT COUNT(*) as count FROM fact_sources WHERE fact_id = ?",
-                (fact_id,),
-            ).fetchone()["count"]
-            if remaining == 0:
-                conn.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
+            conn.execute("DELETE FROM fact_sources WHERE fact_id = ?", (fact_id,))
+            conn.execute("DELETE FROM facts WHERE id = ? AND user_id = ?", (fact_id, user_id))
 
         conn.commit()
 

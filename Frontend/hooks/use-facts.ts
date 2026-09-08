@@ -16,7 +16,7 @@ interface UseFactsResult {
   refetch: () => Promise<FactsResponse | null>
 }
 
-export function useFacts(): UseFactsResult {
+export function useFacts(userUid?: string | null): UseFactsResult {
   const [data, setData] = useState<FactsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [isRefetching, setIsRefetching] = useState(false)
@@ -36,7 +36,7 @@ export function useFacts(): UseFactsResult {
     setUsingMockFallback(false)
 
     try {
-      const response = await getFacts()
+      const response = await getFacts(userUid)
       hasLoadedRef.current = true
       setData(response)
       return response
@@ -62,7 +62,7 @@ export function useFacts(): UseFactsResult {
       setLoading(false)
       setIsRefetching(false)
     }
-  }, [])
+  }, [userUid])
 
   useEffect(() => {
     void refetch()

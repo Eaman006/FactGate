@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { signOut, type User } from 'firebase/auth'
 import {
   Building2,
   Check,
@@ -14,19 +15,18 @@ import {
   Link2,
   LogOut,
   MoreHorizontal,
-  Plus,
   Settings2,
   Sparkles,
-  User,
+  User as UserIcon,
   X,
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import type { FactFilter, FactStatus } from '@/lib/types'
 import { STATUS_META } from '@/lib/types'
+import { auth } from '@/lib/firebase'
 
 export type View = 'overview' | 'documents' | 'facts' | 'relationships' | 'settings'
-
 
 const NAV_ITEMS: { id: View; label: string; icon: React.ElementType }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -47,6 +47,7 @@ interface SidebarProps {
   statusCounts: Record<FactStatus, number>
   totalFacts: number
   onNotify?: (message: string) => void
+  user?: User | null
 }
 
 export function Sidebar({
@@ -61,6 +62,7 @@ export function Sidebar({
   statusCounts,
   totalFacts,
   onNotify,
+  user,
 }: SidebarProps) {
   const router = useRouter()
   const [selectedWorkspace, setSelectedWorkspace] = useState('Acme Corp')
@@ -71,11 +73,11 @@ export function Sidebar({
   const userRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (workspaceRef.current && !workspaceRef.current.contains(e.target as Node)) {
+    function handleClickOutside(event: MouseEvent) {
+      if (workspaceRef.current && !workspaceRef.current.contains(event.target as Node)) {
         setShowWorkspaceMenu(false)
       }
-      if (userRef.current && !userRef.current.contains(e.target as Node)) {
+      if (userRef.current && !userRef.current.contains(event.target as Node)) {
         setShowUserMenu(false)
       }
     }
@@ -83,215 +85,200 @@ export function Sidebar({
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  const handleFilter = (next: FactFilter) => {
-    onFilterChange(next)
-    onCloseMobile()
-  }
-
-  const workspaces = [
-    { name: 'Acme Corp', code: 'AC' },
-    { name: 'Global Enterprise', code: 'GE' },
-    { name: 'Financial Audit Group', code: 'FA' },
-  ]
+  const [imgError, setImgError] = useState(false)
+  const userDisplayName = user?.displayName || 'Analyst'
+  const userEmail = user?.email || 'analyst@factgate.io'
+  const userPhoto = user?.photoURL
+  const userFallbackLetter = user?.displayName?.charAt(0)?.toUpperCase() || 'U'
+  const userInitials =
+    user?.displayName
+      ?.trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((n) => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2) || userFallbackLetter
 
   return (
     <aside
       className={cn(
-        'fixed inset-y-0 left-0 z-30 flex h-svh shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar py-5 transition-[width,transform] duration-200 lg:static lg:h-svh lg:translate-x-0',
-        collapsed ? 'w-[72px] px-2' : 'w-64 px-4',
-        mobileOpen ? 'translate-x-0' : '-translate-x-full',
+        'relative flex flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-all duration-300',
+        collapsed ? 'w-16' : 'w-64',
+        mobileOpen ? 'fixed inset-y-0 left-0 z-50 flex shadow-2xl' : 'hidden md:flex',
       )}
     >
-      <div className={cn('flex items-center pb-7', collapsed ? 'justify-center' : 'justify-between px-2')}>
-        <div className="flex items-center gap-2.5">
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <CircleDot className="size-4" />
+      {/* Header */}
+      <div className="flex h-14 items-center justify-between border-b border-sidebar-border px-3.5">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold text-xs shadow-sm">
+            FG
           </div>
-          {!collapsed && <span className="text-[17px] font-bold tracking-tight">FactLayer</span>}
-        </div>
-        {!collapsed && (
-          <button
-            type="button"
-            aria-label="Close navigation"
-            onClick={onCloseMobile}
-            className="rounded-md p-1 text-muted-foreground hover:bg-accent lg:hidden"
-          >
-            <X className="size-4" />
-          </button>
-        )}
-      </div>
-
-      <button
-        type="button"
-        aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        aria-expanded={!collapsed}
-        onClick={onToggleCollapsed}
-        className="mb-5 hidden items-center justify-center rounded-md border border-border bg-background p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground lg:flex"
-      >
-        {collapsed ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
-      </button>
-
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {!collapsed && (
-          <div ref={workspaceRef} className="relative mb-6 px-2">
-            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-              Workspace
-            </p>
-            <button
-              type="button"
-              onClick={() => setShowWorkspaceMenu((prev) => !prev)}
-              className="flex w-full items-center justify-between rounded-md border border-border bg-background px-3 py-2 text-left text-sm hover:bg-accent/50 transition-colors"
-            >
-              <span className="flex items-center gap-2 truncate">
-                <span className="flex size-5 shrink-0 items-center justify-center rounded bg-primary text-[9px] font-bold text-primary-foreground">
-                  {selectedWorkspace === 'Acme Corp' ? 'AC' : selectedWorkspace === 'Global Enterprise' ? 'GE' : 'FA'}
-                </span>
-                <span className="truncate">{selectedWorkspace}</span>
-              </span>
-              <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-            </button>
-
-            {showWorkspaceMenu && (
-              <div className="absolute left-2 right-2 top-14 z-50 rounded-lg border border-border bg-popover p-1.5 shadow-xl animate-in fade-in zoom-in-95">
-                <div className="mb-1 px-2 py-1 text-[10px] font-semibold uppercase text-muted-foreground">
-                  Switch Workspace
-                </div>
-                {workspaces.map((ws) => (
-                  <button
-                    key={ws.name}
-                    type="button"
-                    onClick={() => {
-                      setSelectedWorkspace(ws.name)
-                      setShowWorkspaceMenu(false)
-                      onNotify?.(`Switched workspace to ${ws.name}`)
-                    }}
-                    className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-popover-foreground hover:bg-accent transition-colors"
-                  >
-                    <span className="flex items-center gap-2">
-                      <span className="flex size-4 items-center justify-center rounded bg-muted text-[8px] font-bold">
-                        {ws.code}
-                      </span>
-                      {ws.name}
-                    </span>
-                    {selectedWorkspace === ws.name && <Check className="size-3.5 text-primary" />}
-                  </button>
-                ))}
-                <div className="my-1 border-t border-border" />
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowWorkspaceMenu(false)
-                    onNotify?.('Create workspace dialog opened')
-                  }}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-                >
-                  <Plus className="size-3.5" />
-                  Create new workspace
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        <nav className="flex flex-col gap-1" aria-label="Main navigation">
-          {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
-            const isActive = currentView === id
-            return (
-              <button
-                key={id}
-                type="button"
-                title={label}
-                onClick={() => {
-                  onViewChange(id)
-                  onCloseMobile()
-                }}
-                className={cn(
-                  'flex items-center rounded-md py-2.5 text-sm transition-colors',
-                  collapsed ? 'justify-center px-0' : 'gap-3 px-3',
-                  isActive
-                    ? 'bg-sidebar-accent font-semibold text-sidebar-accent-foreground ring-1 ring-primary/20'
-                    : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
-                )}
-              >
-                <Icon className={cn('size-4 shrink-0', isActive ? 'text-primary' : '')} />
-                {!collapsed && label}
-              </button>
-            )
-          })}
-        </nav>
-
-        <div className="mt-8">
           {!collapsed && (
-            <p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-              Relationship cases
-            </p>
+            <span className="truncate text-sm font-bold tracking-tight text-foreground">
+              FactGate
+            </span>
           )}
-          <div className="flex flex-col gap-1" role="group" aria-label="Filter facts by relationship">
-            <button
-              type="button"
-              title="All facts"
-              onClick={() => handleFilter('All')}
-              className={cn(
-                'flex items-center rounded-md py-2 text-left text-xs',
-                collapsed ? 'justify-center px-0' : 'gap-3 px-3',
-                filter === 'All'
-                  ? 'bg-sidebar-accent font-medium text-foreground ring-1 ring-primary/20'
-                  : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
-              )}
-              aria-pressed={filter === 'All'}
-            >
-              <Sparkles className="size-3.5 shrink-0" />
-              {!collapsed && (
-                <>
-                  <span className="truncate">All facts</span>
-                  <span className="ml-auto text-[10px] text-muted-foreground">{totalFacts}</span>
-                </>
-              )}
-            </button>
-            {(Object.keys(STATUS_META) as FactStatus[]).map((key) => {
-              const item = STATUS_META[key]
-              const Icon = item.icon
-              const isActive = filter === key
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  title={item.label}
-                  onClick={() => handleFilter(key)}
-                  className={cn(
-                    'flex items-center rounded-md py-2 text-left text-xs',
-                    collapsed ? 'justify-center px-0' : 'gap-3 px-3',
-                    isActive
-                      ? 'bg-sidebar-accent font-medium text-foreground ring-1 ring-primary/20'
-                      : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
-                  )}
-                  aria-pressed={isActive}
-                >
-                  <Icon className="size-3.5 shrink-0" />
-                  {!collapsed && (
-                    <>
-                      <span className="truncate">{item.label}</span>
-                      <span className="ml-auto text-[10px] text-muted-foreground">{statusCounts[key]}</span>
-                    </>
-                  )}
-                </button>
-              )
-            })}
-          </div>
         </div>
-      </div>
-
-      <div ref={userRef} className="relative mt-auto shrink-0 border-t border-sidebar-border pt-4">
         <button
           type="button"
-          title="Workspace settings"
+          onClick={onToggleCollapsed}
+          className="hidden md:flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground transition-colors"
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {collapsed ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
+        </button>
+        <button
+          type="button"
+          onClick={onCloseMobile}
+          className="flex md:hidden size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent"
+          aria-label="Close sidebar"
+        >
+          <X className="size-4" />
+        </button>
+      </div>
+
+      {/* Workspace Switcher */}
+      <div ref={workspaceRef} className="relative border-b border-sidebar-border p-2">
+        <button
+          type="button"
+          onClick={() => setShowWorkspaceMenu((prev) => !prev)}
+          className={cn(
+            'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-sidebar-accent',
+            collapsed && 'justify-center px-0',
+          )}
+        >
+          <div className="flex size-5 shrink-0 items-center justify-center rounded bg-primary/10 text-primary">
+            <Building2 className="size-3" />
+          </div>
+          {!collapsed && (
+            <>
+              <span className="truncate font-medium text-foreground">{selectedWorkspace}</span>
+              <ChevronDown className="ml-auto size-3.5 text-muted-foreground" />
+            </>
+          )}
+        </button>
+
+        {showWorkspaceMenu && !collapsed && (
+          <div className="absolute left-2 right-2 top-11 z-50 rounded-lg border border-border bg-popover p-1 shadow-lg animate-in fade-in zoom-in-95">
+            {['Acme Corp', 'Personal Workspace', 'Global Enterprise'].map((ws) => (
+              <button
+                key={ws}
+                type="button"
+                onClick={() => {
+                  setSelectedWorkspace(ws)
+                  setShowWorkspaceMenu(false)
+                  onNotify?.(`Switched to workspace: ${ws}`)
+                }}
+                className={cn(
+                  'flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-xs transition-colors hover:bg-accent',
+                  selectedWorkspace === ws ? 'font-semibold text-primary' : 'text-popover-foreground',
+                )}
+              >
+                {ws}
+                {selectedWorkspace === ws && <Check className="size-3 text-primary" />}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Navigation Links */}
+      <div className="flex-1 overflow-y-auto px-2 py-3 space-y-1">
+        <div className="mb-2 px-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+          {!collapsed && 'Navigation'}
+        </div>
+        {NAV_ITEMS.map((item) => {
+          const Icon = item.icon
+          const isActive = currentView === item.id
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => {
+                onViewChange(item.id)
+                onCloseMobile()
+              }}
+              className={cn(
+                'flex w-full items-center rounded-md py-2 text-xs font-medium transition-colors',
+                collapsed ? 'justify-center px-0' : 'gap-3 px-2.5',
+                isActive
+                  ? 'bg-sidebar-accent text-sidebar-accent-foreground font-semibold shadow-xs'
+                  : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
+              )}
+            >
+              <Icon className={cn('size-4 shrink-0', isActive ? 'text-primary' : '')} />
+              {!collapsed && <span>{item.label}</span>}
+            </button>
+          )
+        })}
+
+        <div className="my-3 border-t border-sidebar-border" />
+
+        {/* Filter Quick Links */}
+        <div className="mb-2 px-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+          {!collapsed && 'Status Filter'}
+        </div>
+
+        {(['All', 'corroborated', 'contradicted', 'resolved', 'review'] as const).map((key) => {
+          const isAll = key === 'All'
+          const meta = isAll ? null : STATUS_META[key]
+          const label = isAll ? 'All facts' : meta?.label
+          const count = isAll ? totalFacts : statusCounts[key] || 0
+          const isActive = filter === key
+
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => {
+                onFilterChange(key)
+                onCloseMobile()
+              }}
+              className={cn(
+                'flex w-full items-center justify-between rounded-md py-1.5 text-xs transition-colors',
+                collapsed ? 'justify-center px-0' : 'px-2.5',
+                isActive
+                  ? 'bg-primary/10 text-primary font-semibold'
+                  : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
+              )}
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <CircleDot
+                  className={cn(
+                    'size-3 shrink-0',
+                    isAll
+                      ? 'text-foreground'
+                      : key === 'corroborated'
+                        ? 'text-emerald-500'
+                        : key === 'contradicted'
+                          ? 'text-rose-500'
+                          : key === 'resolved'
+                            ? 'text-sky-500'
+                            : 'text-amber-500',
+                  )}
+                />
+                {!collapsed && <span className="truncate">{label}</span>}
+              </div>
+              {!collapsed && (
+                <span className="font-mono text-[10px] text-muted-foreground">{count}</span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Footer / Profile */}
+      <div ref={userRef} className="relative border-t border-sidebar-border p-2">
+        <button
+          type="button"
           onClick={() => {
             onViewChange('settings')
             onCloseMobile()
           }}
           className={cn(
-            'flex w-full items-center rounded-md py-2 text-sm transition-colors',
-            collapsed ? 'justify-center px-0' : 'gap-3 px-3',
+            'flex w-full items-center rounded-md py-2 text-xs transition-colors',
+            collapsed ? 'justify-center px-0' : 'gap-3 px-2.5',
             currentView === 'settings'
               ? 'bg-sidebar-accent font-semibold text-sidebar-accent-foreground ring-1 ring-primary/20'
               : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
@@ -301,19 +288,27 @@ export function Sidebar({
           {!collapsed && 'Workspace settings'}
         </button>
 
-
         {!collapsed ? (
           <button
             type="button"
             onClick={() => setShowUserMenu((prev) => !prev)}
             className="mt-3 flex w-full items-center gap-2.5 rounded-md p-1.5 hover:bg-sidebar-accent transition-colors text-left"
           >
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
-              EA
-            </div>
+            {userPhoto && !imgError ? (
+              <img
+                src={userPhoto}
+                alt={userDisplayName}
+                onError={() => setImgError(true)}
+                className="size-8 shrink-0 rounded-full object-cover ring-1 ring-border"
+              />
+            ) : (
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+                {userFallbackLetter}
+              </div>
+            )}
             <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-medium text-foreground">Eaman</p>
-              <p className="truncate text-[11px] text-muted-foreground">Engineering</p>
+              <p className="truncate text-xs font-medium text-foreground">{userDisplayName}</p>
+              <p className="truncate text-[11px] text-muted-foreground">{userEmail}</p>
             </div>
             <MoreHorizontal className="ml-auto size-4 shrink-0 text-muted-foreground" />
           </button>
@@ -322,9 +317,18 @@ export function Sidebar({
             <button
               type="button"
               onClick={() => setShowUserMenu((prev) => !prev)}
-              className="flex size-8 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary hover:ring-2 hover:ring-primary/20"
+              className="flex size-8 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary hover:ring-2 hover:ring-primary/20 overflow-hidden"
             >
-              EA
+              {userPhoto && !imgError ? (
+                <img
+                  src={userPhoto}
+                  alt={userDisplayName}
+                  onError={() => setImgError(true)}
+                  className="size-full object-cover"
+                />
+              ) : (
+                userFallbackLetter
+              )}
             </button>
           </div>
         )}
@@ -337,8 +341,8 @@ export function Sidebar({
             )}
           >
             <div className="border-b border-border px-2 py-1.5 mb-1">
-              <p className="text-xs font-semibold text-popover-foreground">Eaman</p>
-              <p className="text-[10px] text-muted-foreground">eaman@factgate.io</p>
+              <p className="text-xs font-semibold text-popover-foreground">{userDisplayName}</p>
+              <p className="text-[10px] text-muted-foreground">{userEmail}</p>
             </div>
             <button
               type="button"
@@ -348,7 +352,7 @@ export function Sidebar({
               }}
               className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-popover-foreground hover:bg-accent transition-colors"
             >
-              <User className="size-3.5 text-muted-foreground" />
+              <UserIcon className="size-3.5 text-muted-foreground" />
               Profile Settings
             </button>
             <button
@@ -376,10 +380,15 @@ export function Sidebar({
             <div className="my-1 border-t border-border" />
             <button
               type="button"
-              onClick={() => {
+              onClick={async () => {
                 setShowUserMenu(false)
-                onNotify?.('User logged out')
-                router.push('/login')
+                try {
+                  await signOut(auth)
+                } catch (err) {
+                  console.error('Sign out error:', err)
+                }
+                onNotify?.('Logged out successfully')
+                router.push('/')
               }}
               className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 transition-colors"
             >
@@ -392,5 +401,3 @@ export function Sidebar({
     </aside>
   )
 }
-
-

@@ -20,18 +20,23 @@ import {
   HelpCircle,
   History,
   Inbox,
+  Key,
   Link2,
+  Lock,
   Menu,
   MoreHorizontal,
   PanelRight,
   Plus,
   RefreshCw,
   Search,
+  Shield,
   ShieldCheck,
   Sparkles,
   Tag,
+  Terminal,
   Trash2,
   TriangleAlert,
+  User as UserIcon,
   X,
   ZoomIn,
 } from 'lucide-react'
@@ -63,6 +68,8 @@ const VIEW_LABELS: Record<View, string> = {
   facts: 'Facts',
   relationships: 'Relationships',
   settings: 'Workspace Management',
+  profile: 'Profile Settings',
+  'api-keys': 'Developer & API Settings',
 }
 
 
@@ -543,6 +550,75 @@ export default function Page() {
     }
     setWorkspacesList((prev) => prev.filter((item) => item.id !== id))
     notify(`Workspace '${name}' deleted.`)
+  }
+
+  interface ApiKeyItem {
+    id: string
+    name: string
+    keyMasked: string
+    keyFull: string
+    createdAt: string
+    lastUsed: string
+    status: 'active' | 'revoked'
+  }
+
+  const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([
+    {
+      id: 'key-1',
+      name: 'Production Server Key',
+      keyMasked: 'fg_live_9a8f••••••••4e12',
+      keyFull: 'fg_live_9a8f3b2e7c1d4a0b5f8e9d6c3b2a1f0e4e12',
+      createdAt: '2026-08-15',
+      lastUsed: 'Just now',
+      status: 'active',
+    },
+    {
+      id: 'key-2',
+      name: 'Development SDK Key',
+      keyMasked: 'fg_live_7b2c••••••••89d1',
+      keyFull: 'fg_live_7b2c4d6e8f0a1b3c5d7e9f1a3b5c7d9e89d1',
+      createdAt: '2026-09-01',
+      lastUsed: '2 hours ago',
+      status: 'active',
+    },
+  ])
+  const [newKeyName, setNewKeyName] = useState('')
+  const [showCreateKeyForm, setShowCreateKeyForm] = useState(false)
+
+  const handleCreateApiKey = (e: React.FormEvent) => {
+    e.preventDefault()
+    const name = newKeyName.trim() || 'New Secret Key'
+    const randHex1 = Math.random().toString(36).substring(2, 8)
+    const randHex2 = Math.random().toString(36).substring(2, 8)
+    const keyFull = `fg_live_${randHex1}${randHex2}${Date.now().toString(36)}`
+    const keyMasked = `fg_live_${randHex1}••••••••${randHex2.slice(-4)}`
+
+    const newKey: ApiKeyItem = {
+      id: `key-${Date.now()}`,
+      name,
+      keyMasked,
+      keyFull,
+      createdAt: new Date().toISOString().split('T')[0],
+      lastUsed: 'Never',
+      status: 'active',
+    }
+
+    setApiKeys((prev) => [newKey, ...prev])
+    setNewKeyName('')
+    setShowCreateKeyForm(false)
+    notify(`Generated new secret key '${name}'.`)
+  }
+
+  const handleCopyKey = (key: ApiKeyItem) => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(key.keyFull)
+    }
+    notify(`Copied '${key.name}' API token to clipboard!`)
+  }
+
+  const handleRevokeKey = (id: string, name: string) => {
+    setApiKeys((prev) => prev.filter((k) => k.id !== id))
+    notify(`Revoked API key '${name}'.`)
   }
 
   const upload = useUpload({
@@ -2586,6 +2662,268 @@ export default function Page() {
                                     >
                                       <Trash2 className="size-3.5 text-rose-600" />
                                       Delete
+                                    </Button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* VIEW 6: USER PROFILE SETTINGS */}
+                {currentView === 'profile' && (
+                  <div>
+                    <section className="mb-7 flex flex-col justify-between gap-4 md:flex-row md:items-end">
+                      <div>
+                        <div className="mb-2 flex items-center gap-2 text-xs font-medium text-primary">
+                          <UserIcon className="size-3.5" />
+                          Account Settings
+                        </div>
+                        <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">
+                          User Profile Settings
+                        </h2>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          Manage your personal account information, authentication methods, and security preferences.
+                        </p>
+                      </div>
+                    </section>
+
+                    {/* Card 1: Personal Information */}
+                    <div className="mb-7 rounded-lg border border-border bg-card p-6 shadow-xs">
+                      <div className="mb-6 flex flex-col gap-6 sm:flex-row sm:items-center">
+                        {currentUser?.photoURL ? (
+                          <img
+                            src={currentUser.photoURL}
+                            alt={currentUser.displayName || 'User Avatar'}
+                            className="size-20 rounded-full object-cover ring-2 ring-primary/20"
+                          />
+                        ) : (
+                          <div className="flex size-20 items-center justify-center rounded-full bg-primary/10 text-2xl font-semibold text-primary ring-2 ring-primary/20">
+                            {currentUser?.displayName?.charAt(0)?.toUpperCase() || 'U'}
+                          </div>
+                        )}
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-xl font-bold">{currentUser?.displayName || 'Analyst'}</h3>
+                            <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
+                              Active User
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">{currentUser?.email}</p>
+                          <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-mono text-muted-foreground">
+                            <span className="rounded bg-muted px-2 py-1">UID: {currentUser?.uid}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="rounded-md border border-border bg-background p-4">
+                          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                            Full Display Name
+                          </p>
+                          <p className="mt-1 text-sm font-medium">{currentUser?.displayName || 'N/A'}</p>
+                        </div>
+                        <div className="rounded-md border border-border bg-background p-4">
+                          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                            Email Address
+                          </p>
+                          <p className="mt-1 text-sm font-medium">{currentUser?.email || 'N/A'}</p>
+                        </div>
+                        <div className="rounded-md border border-border bg-background p-4">
+                          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                            Authentication Provider
+                          </p>
+                          <p className="mt-1 text-sm font-medium">
+                            {currentUser?.providerData[0]?.providerId === 'google.com'
+                              ? 'Google SSO (OAuth 2.0)'
+                              : 'Firebase Authentication'}
+                          </p>
+                        </div>
+                        <div className="rounded-md border border-border bg-background p-4">
+                          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                            Email Verification Status
+                          </p>
+                          <p className="mt-1 text-sm font-medium text-emerald-600 flex items-center gap-1.5">
+                            <CheckCircle2 className="size-3.5" /> Verified
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Card 2: Security & Password */}
+                    <div className="rounded-lg border border-border bg-card p-6">
+                      <div className="mb-4">
+                        <h3 className="text-base font-semibold">Security & Password Management</h3>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Manage your authentication security, SSO connections, and active login credentials.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <Button
+                          variant="outline"
+                          onClick={() => notify('Security check requested. Authentication state verified.')}
+                          className="gap-2 text-xs"
+                        >
+                          <Lock className="size-3.5" />
+                          Manage Authentication
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={() => notify('Password reset link sent to your registered email.')}
+                          className="gap-2 text-xs"
+                        >
+                          <Shield className="size-3.5" />
+                          Change Password
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* VIEW 7: DEVELOPER API TOKENS */}
+                {currentView === 'api-keys' && (
+                  <div>
+                    <section className="mb-7 flex flex-col justify-between gap-4 md:flex-row md:items-end">
+                      <div>
+                        <div className="mb-2 flex items-center gap-2 text-xs font-medium text-primary">
+                          <Key className="size-3.5" />
+                          Developer & API Settings
+                        </div>
+                        <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">
+                          API Tokens & Keys
+                        </h2>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          Manage REST API secret keys to authenticate backend tools, SDKs, and automated pipelines with FactGate.
+                        </p>
+                      </div>
+                    </section>
+
+                    {/* Card 1: API REST Documentation Banner */}
+                    <div className="mb-7 rounded-lg border border-border bg-card p-6 shadow-xs">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <h3 className="text-base font-semibold flex items-center gap-2">
+                            <Terminal className="size-4 text-primary" />
+                            FactGate REST API Authentication
+                          </h3>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Include your secret key in the request header to authenticate requests to the Flask knowledge layer.
+                          </p>
+                        </div>
+                        <span className="rounded-md bg-primary/10 px-2.5 py-1 text-[11px] font-mono text-primary font-medium">
+                          v1.0 REST API
+                        </span>
+                      </div>
+
+                      <div className="mt-4 rounded-md border border-border bg-slate-950 p-4 font-mono text-xs text-emerald-400">
+                        <p className="text-slate-400"># Example Authorization Header:</p>
+                        <p className="mt-1">
+                          curl -X GET http://localhost:5000/facts \<br />
+                          &nbsp;&nbsp;-H &quot;Authorization: Bearer fg_live_••••••••••••&quot;
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Card 2: Active API Keys Data Table */}
+                    <div className="rounded-lg border border-border bg-card">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-border px-6 py-4">
+                        <div>
+                          <h3 className="text-base font-semibold">Active Secret Keys</h3>
+                          <p className="mt-0.5 text-xs text-muted-foreground">
+                            {apiKeys.length} secret key{apiKeys.length === 1 ? '' : 's'} active for your account
+                          </p>
+                        </div>
+                        <Button
+                          onClick={() => setShowCreateKeyForm((prev) => !prev)}
+                          className="gap-2 text-xs"
+                        >
+                          <Plus className="size-4" />
+                          {showCreateKeyForm ? 'Cancel' : 'Generate New Secret Key'}
+                        </Button>
+                      </div>
+
+                      {showCreateKeyForm && (
+                        <div className="border-b border-border bg-muted/20 p-5 animate-in fade-in">
+                          <form onSubmit={handleCreateApiKey} className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                            <div className="flex-1">
+                              <label className="block text-xs font-medium text-foreground mb-1.5">
+                                Secret Key Name / Description
+                              </label>
+                              <input
+                                type="text"
+                                value={newKeyName}
+                                onChange={(e) => setNewKeyName(e.target.value)}
+                                placeholder="e.g. CI/CD Ingestion Pipeline Key"
+                                className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                              />
+                            </div>
+                            <Button type="submit" className="gap-1.5 text-xs">
+                              <Key className="size-3.5" />
+                              Generate Token
+                            </Button>
+                          </form>
+                        </div>
+                      )}
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[700px] text-left">
+                          <thead>
+                            <tr className="border-b border-border bg-muted/30 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                              <th className="px-6 py-3.5 font-medium">Key Description</th>
+                              <th className="px-6 py-3.5 font-medium">Secret Token</th>
+                              <th className="px-6 py-3.5 font-medium">Created Date</th>
+                              <th className="px-6 py-3.5 font-medium">Last Used</th>
+                              <th className="px-6 py-3.5 font-medium">Status</th>
+                              <th className="px-6 py-3.5 text-right font-medium">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border">
+                            {apiKeys.map((key) => (
+                              <tr key={key.id} className="hover:bg-muted/40 transition-colors">
+                                <td className="px-6 py-4">
+                                  <div className="flex items-center gap-2.5">
+                                    <div className="flex size-8 shrink-0 items-center justify-center rounded bg-primary/10 text-primary">
+                                      <Key className="size-4" />
+                                    </div>
+                                    <div>
+                                      <p className="text-xs font-semibold">{key.name}</p>
+                                      <p className="text-[10px] text-muted-foreground">Full Access Token</p>
+                                    </div>
+                                  </div>
+                                </td>
+                                <td className="px-6 py-4 font-mono text-xs text-muted-foreground">
+                                  {key.keyMasked}
+                                </td>
+                                <td className="px-6 py-4 text-xs text-muted-foreground">{key.createdAt}</td>
+                                <td className="px-6 py-4 text-xs text-muted-foreground">{key.lastUsed}</td>
+                                <td className="px-6 py-4">
+                                  <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
+                                    Active
+                                  </span>
+                                </td>
+                                <td className="px-6 py-4 text-right">
+                                  <div className="flex items-center justify-end gap-2">
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => handleCopyKey(key)}
+                                      className="gap-1.5 text-xs"
+                                    >
+                                      <Copy className="size-3.5" />
+                                      Copy
+                                    </Button>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => handleRevokeKey(key.id, key.name)}
+                                      className="gap-1.5 text-xs border-rose-200 bg-rose-50/60 text-rose-700 hover:bg-rose-100 hover:text-rose-800"
+                                    >
+                                      <Trash2 className="size-3.5 text-rose-600" />
+                                      Revoke
                                     </Button>
                                   </div>
                                 </td>

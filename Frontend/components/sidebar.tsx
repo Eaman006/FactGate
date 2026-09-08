@@ -26,7 +26,7 @@ import type { FactFilter, FactStatus } from '@/lib/types'
 import { STATUS_META } from '@/lib/types'
 import { auth } from '@/lib/firebase'
 
-export type View = 'overview' | 'documents' | 'facts' | 'relationships' | 'settings'
+export type View = 'overview' | 'documents' | 'facts' | 'relationships' | 'settings' | 'profile' | 'api-keys'
 
 const NAV_ITEMS: { id: View; label: string; icon: React.ElementType }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -348,7 +348,9 @@ export function Sidebar({
               type="button"
               onClick={() => {
                 setShowUserMenu(false)
-                onNotify?.('Profile settings opened')
+                onViewChange('profile')
+                onCloseMobile()
+                onNotify?.('Switched to Profile Settings')
               }}
               className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-popover-foreground hover:bg-accent transition-colors"
             >
@@ -359,7 +361,9 @@ export function Sidebar({
               type="button"
               onClick={() => {
                 setShowUserMenu(false)
-                onNotify?.('Workspace preferences opened')
+                onViewChange('settings')
+                onCloseMobile()
+                onNotify?.('Switched to Workspace Management')
               }}
               className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-popover-foreground hover:bg-accent transition-colors"
             >
@@ -370,7 +374,9 @@ export function Sidebar({
               type="button"
               onClick={() => {
                 setShowUserMenu(false)
-                onNotify?.('API token settings opened')
+                onViewChange('api-keys')
+                onCloseMobile()
+                onNotify?.('Switched to API Tokens & Keys')
               }}
               className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-popover-foreground hover:bg-accent transition-colors"
             >

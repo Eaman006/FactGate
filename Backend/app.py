@@ -137,7 +137,7 @@ Return JSON:
 }}"""
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": ["http://localhost:3000"]}})
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 
 def utc_now_iso() -> str:

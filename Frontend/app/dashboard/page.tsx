@@ -44,7 +44,7 @@ import {
 
 
 import { Button } from '@/components/ui/button'
-import { Sidebar, type View } from '@/components/sidebar'
+import { Sidebar, type View, type WorkspaceItem } from '@/components/sidebar'
 import { StatusBadge } from '@/components/status-badge'
 import { UploadZone } from '@/components/upload-zone'
 import { useFacts } from '@/hooks/use-facts'
@@ -71,6 +71,30 @@ const VIEW_LABELS: Record<View, string> = {
   profile: 'Profile Settings',
   'api-keys': 'Developer & API Settings',
 }
+
+const DEFAULT_WORKSPACES: WorkspaceItem[] = [
+  {
+    id: 'ws-1',
+    name: 'Acme Corp',
+    role: 'Owner',
+    isDefault: true,
+    createdDate: 'Oct 12, 2024',
+  },
+  {
+    id: 'ws-2',
+    name: 'Personal Workspace',
+    role: 'Admin',
+    isDefault: false,
+    createdDate: 'Nov 01, 2024',
+  },
+  {
+    id: 'ws-3',
+    name: 'Global Enterprise',
+    role: 'Member',
+    isDefault: false,
+    createdDate: 'Dec 15, 2024',
+  },
+]
 
 
 function Kpi({
@@ -469,37 +493,71 @@ export default function Page() {
     }
   }
 
-  interface WorkspaceItem {
-    id: string
-    name: string
-    role: 'Owner' | 'Admin' | 'Member'
-    isDefault?: boolean
-    createdDate: string
-  }
+  const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>(DEFAULT_WORKSPACES)
+  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceItem>(DEFAULT_WORKSPACES[0])
 
-  const [workspacesList, setWorkspacesList] = useState<WorkspaceItem[]>([
-    {
-      id: 'ws-1',
-      name: 'Acme Corp',
-      role: 'Owner',
-      isDefault: true,
-      createdDate: 'Oct 12, 2024',
-    },
-    {
-      id: 'ws-2',
-      name: 'Personal Workspace',
-      role: 'Admin',
-      isDefault: false,
-      createdDate: 'Nov 01, 2024',
-    },
-    {
-      id: 'ws-3',
-      name: 'Global Enterprise',
-      role: 'Member',
-      isDefault: false,
-      createdDate: 'Dec 15, 2024',
-    },
-  ])
+  // Load user-specific workspaces from localStorage on currentUser change / mount
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const key = currentUser?.uid
+      ? `factgate_workspaces_${currentUser.uid}`
+      : 'factgate_workspaces_default'
+
+    const activeKey = currentUser?.uid
+      ? `factgate_active_workspace_${currentUser.uid}`
+      : 'factgate_active_workspace_default'
+
+    try {
+      const saved = localStorage.getItem(key)
+      if (saved) {
+        const parsed = JSON.parse(saved) as WorkspaceItem[]
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setWorkspaces(parsed)
+
+          const savedActiveId = localStorage.getItem(activeKey)
+          const matchedActive = parsed.find((ws) => ws.id === savedActiveId)
+          setActiveWorkspace(matchedActive || parsed[0])
+          return
+        }
+      }
+    } catch {
+      // Ignore localStorage parse error
+    }
+
+    setWorkspaces(DEFAULT_WORKSPACES)
+    setActiveWorkspace(DEFAULT_WORKSPACES[0])
+  }, [currentUser?.uid])
+
+  // Save workspaces to localStorage whenever workspaces array changes
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const key = currentUser?.uid
+      ? `factgate_workspaces_${currentUser.uid}`
+      : 'factgate_workspaces_default'
+
+    try {
+      localStorage.setItem(key, JSON.stringify(workspaces))
+    } catch {
+      // Ignore localStorage write error
+    }
+  }, [workspaces, currentUser?.uid])
+
+  // Save activeWorkspace selection to localStorage whenever activeWorkspace changes
+  useEffect(() => {
+    if (typeof window === 'undefined' || !activeWorkspace) return
+
+    const activeKey = currentUser?.uid
+      ? `factgate_active_workspace_${currentUser.uid}`
+      : 'factgate_active_workspace_default'
+
+    try {
+      localStorage.setItem(activeKey, activeWorkspace.id)
+    } catch {
+      // Ignore localStorage write error
+    }
+  }, [activeWorkspace, currentUser?.uid])
 
   const [newWorkspaceName, setNewWorkspaceName] = useState('')
   const [editingWsId, setEditingWsId] = useState<string | null>(null)
@@ -519,7 +577,8 @@ export default function Page() {
       isDefault: false,
       createdDate: 'Just now',
     }
-    setWorkspacesList((prev) => [...prev, newWs])
+    setWorkspaces((prev) => [...prev, newWs])
+    setActiveWorkspace(newWs)
     setNewWorkspaceName('')
     notify(`Workspace '${trimmed}' created successfully.`)
   }
@@ -535,8 +594,17 @@ export default function Page() {
       notify('Workspace name cannot be empty.')
       return
     }
-    setWorkspacesList((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, name: trimmed } : item)),
+    setWorkspaces((prev) =>
+      prev.map((item) => {
+        if (item.id === id) {
+          const updated = { ...item, name: trimmed }
+          if (activeWorkspace?.id === id) {
+            setActiveWorkspace(updated)
+          }
+          return updated
+        }
+        return item
+      }),
     )
     notify(`Workspace renamed to '${trimmed}'.`)
     setEditingWsId(null)
@@ -544,11 +612,17 @@ export default function Page() {
   }
 
   const handleDeleteWorkspace = (id: string, name: string) => {
-    if (workspacesList.length <= 1) {
+    if (workspaces.length <= 1) {
       notify('Cannot delete the only remaining workspace.')
       return
     }
-    setWorkspacesList((prev) => prev.filter((item) => item.id !== id))
+    setWorkspaces((prev) => {
+      const next = prev.filter((item) => item.id !== id)
+      if (activeWorkspace?.id === id && next.length > 0) {
+        setActiveWorkspace(next[0])
+      }
+      return next
+    })
     notify(`Workspace '${name}' deleted.`)
   }
 
@@ -622,6 +696,7 @@ export default function Page() {
   }
 
   const upload = useUpload({
+    userUid: currentUser?.uid,
     onSuccess: async (response) => {
       notify(response.message || 'Documents uploaded successfully.')
       setNotifications((prev) => [
@@ -636,6 +711,9 @@ export default function Page() {
         ...prev,
       ])
       await refetch()
+    },
+    onError: (errorMsg) => {
+      notify(`Upload failed: ${errorMsg}`)
     },
   })
 
@@ -869,6 +947,9 @@ export default function Page() {
         totalFacts={facts.length}
         onNotify={notify}
         user={currentUser}
+        workspaces={workspaces}
+        activeWorkspace={activeWorkspace}
+        onSelectWorkspace={setActiveWorkspace}
       />
       {sidebar.mobileOpen && (
         <button
@@ -2573,7 +2654,7 @@ export default function Page() {
                         <div>
                           <h3 className="text-base font-semibold">Active Workspaces</h3>
                           <p className="mt-0.5 text-xs text-muted-foreground">
-                            {workspacesList.length} workspace{workspacesList.length === 1 ? '' : 's'} configured
+                            {workspaces.length} workspace{workspaces.length === 1 ? '' : 's'} configured
                           </p>
                         </div>
                       </div>
@@ -2589,7 +2670,7 @@ export default function Page() {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-border">
-                            {workspacesList.map((ws) => (
+                            {workspaces.map((ws) => (
                               <tr key={ws.id} className="hover:bg-muted/40 transition-colors">
                                 <td className="px-6 py-4">
                                   {editingWsId === ws.id ? (

@@ -35,6 +35,14 @@ const NAV_ITEMS: { id: View; label: string; icon: React.ElementType }[] = [
   { id: 'relationships', label: 'Relationships', icon: Link2 },
 ]
 
+export interface WorkspaceItem {
+  id: string
+  name: string
+  role: 'Owner' | 'Admin' | 'Member'
+  isDefault?: boolean
+  createdDate: string
+}
+
 interface SidebarProps {
   currentView: View
   onViewChange: (view: View) => void
@@ -48,6 +56,9 @@ interface SidebarProps {
   totalFacts: number
   onNotify?: (message: string) => void
   user?: User | null
+  workspaces: WorkspaceItem[]
+  activeWorkspace: WorkspaceItem
+  onSelectWorkspace: (workspace: WorkspaceItem) => void
 }
 
 export function Sidebar({
@@ -63,9 +74,11 @@ export function Sidebar({
   totalFacts,
   onNotify,
   user,
+  workspaces,
+  activeWorkspace,
+  onSelectWorkspace,
 }: SidebarProps) {
   const router = useRouter()
-  const [selectedWorkspace, setSelectedWorkspace] = useState('Acme Corp')
   const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false)
   const [showUserMenu, setShowUserMenu] = useState(false)
 
@@ -153,7 +166,7 @@ export function Sidebar({
           </div>
           {!collapsed && (
             <>
-              <span className="truncate font-medium text-foreground">{selectedWorkspace}</span>
+              <span className="truncate font-medium text-foreground">{activeWorkspace?.name || 'Acme Corp'}</span>
               <ChevronDown className="ml-auto size-3.5 text-muted-foreground" />
             </>
           )}
@@ -161,22 +174,22 @@ export function Sidebar({
 
         {showWorkspaceMenu && !collapsed && (
           <div className="absolute left-2 right-2 top-11 z-50 rounded-lg border border-border bg-popover p-1 shadow-lg animate-in fade-in zoom-in-95">
-            {['Acme Corp', 'Personal Workspace', 'Global Enterprise'].map((ws) => (
+            {workspaces.map((ws) => (
               <button
-                key={ws}
+                key={ws.id}
                 type="button"
                 onClick={() => {
-                  setSelectedWorkspace(ws)
+                  onSelectWorkspace(ws)
                   setShowWorkspaceMenu(false)
-                  onNotify?.(`Switched to workspace: ${ws}`)
+                  onNotify?.(`Switched to workspace: ${ws.name}`)
                 }}
                 className={cn(
                   'flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-xs transition-colors hover:bg-accent',
-                  selectedWorkspace === ws ? 'font-semibold text-primary' : 'text-popover-foreground',
+                  activeWorkspace?.id === ws.id ? 'font-semibold text-primary' : 'text-popover-foreground',
                 )}
               >
-                {ws}
-                {selectedWorkspace === ws && <Check className="size-3 text-primary" />}
+                <span className="truncate">{ws.name}</span>
+                {activeWorkspace?.id === ws.id && <Check className="size-3 text-primary shrink-0" />}
               </button>
             ))}
           </div>

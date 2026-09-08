@@ -1,4 +1,5 @@
 import { ApiError } from '@/lib/types'
+import { auth } from '@/lib/firebase'
 
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, '') ?? 'http://localhost:5000'
@@ -30,9 +31,29 @@ export async function apiRequest<T>(
 ): Promise<T> {
   const url = `${API_BASE_URL}${path}`
 
+  // 1. Asynchronously fetch the current user's token or fallback to UID
+  let token = userUid
+  if (!token && auth?.currentUser) {
+    try {
+      token = await auth.currentUser.getIdToken()
+    } catch {
+      token = auth.currentUser.uid
+    }
+  }
+  if (!token && auth?.currentUser?.uid) {
+    token = auth.currentUser.uid
+  }
+
   const headers = new Headers(init?.headers || {})
-  if (userUid) {
-    headers.set('Authorization', `Bearer ${userUid}`)
+
+  // 2. FormData Compatibility: Do NOT override Content-Type header if body is FormData
+  // (allows browser to set multipart/form-data with boundary)
+  if (init?.body instanceof FormData) {
+    headers.delete('Content-Type')
+  }
+
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
   }
 
   const requestOptions: RequestInit = {
@@ -76,6 +97,14 @@ function extractErrorMessage(payload: unknown): string | null {
   }
 
   const record = payload as Record<string, unknown>
+
+  if (Array.isArray(record.details) && record.details.length > 0) {
+    const detailsStr = record.details.filter(Boolean).join('; ')
+    if (detailsStr) {
+      return record.error ? `${record.error}: ${detailsStr}` : detailsStr
+    }
+  }
+
   for (const key of ['message', 'error', 'detail', 'details']) {
     const value = record[key]
     if (typeof value === 'string' && value.trim()) {
@@ -98,5 +127,3 @@ export async function deleteDocument(
 export async function checkHealth(): Promise<{ status: string; service?: string }> {
   return apiRequest<{ status: string; service?: string }>('/health')
 }
-
-

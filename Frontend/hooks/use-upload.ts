@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { uploadPdfs } from '@/lib/api'
 import { ApiError, type UploadResponse } from '@/lib/types'
+import { auth } from '@/lib/firebase'
 
 export type UploadStage =
   | 'idle'
@@ -38,6 +39,7 @@ export interface SelectedUploadFile {
 interface UseUploadOptions {
   userUid?: string | null
   onSuccess?: (response: UploadResponse) => void | Promise<void>
+  onError?: (errorMsg: string) => void
 }
 
 interface UseUploadResult {
@@ -178,7 +180,8 @@ export function useUpload(options: UseUploadOptions = {}): UseUploadResult {
 
     try {
       await runVisualStages(label)
-      const response = await uploadPdfs(selectedFiles.map((item) => item.file), options.userUid)
+      const token = options.userUid || auth?.currentUser?.uid
+      const response = await uploadPdfs(selectedFiles.map((item) => item.file), token)
 
       setStage('complete')
       setProgress(100)
@@ -191,6 +194,15 @@ export function useUpload(options: UseUploadOptions = {}): UseUploadResult {
       }, 1800)
     } catch (err) {
       clearTimers()
+      console.warn('[PDF Upload Handled Warning]', err)
+      if (err instanceof ApiError) {
+        console.warn('[PDF Upload Server Details]', {
+          message: err.message,
+          status: err.status,
+          code: err.code,
+          details: err.details,
+        })
+      }
       const message =
         err instanceof ApiError
           ? err.message
@@ -200,8 +212,9 @@ export function useUpload(options: UseUploadOptions = {}): UseUploadResult {
       setStage('error')
       setProgress(0)
       setStageLabel('Upload failed')
-      setDetailLabel('Your selected files were preserved. Retry when ready.')
+      setDetailLabel(message)
       setError(message)
+      options.onError?.(message)
     }
   }, [clearFiles, clearTimers, options, runVisualStages, selectedFiles, stage])
 

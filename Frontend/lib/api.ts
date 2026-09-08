@@ -1,5 +1,6 @@
 import { apiRequest, UPLOAD_FIELD_NAME } from '@/lib/api-client'
 import { normalizeFactsResponse, normalizeUploadResponse } from '@/lib/normalize'
+import { auth } from '@/lib/firebase'
 import type {
   BackendFactsPayload,
   BackendUploadPayload,
@@ -8,6 +9,7 @@ import type {
 } from '@/lib/types'
 
 export async function getFacts(userUid?: string | null): Promise<FactsResponse> {
+  const token = userUid || auth?.currentUser?.uid
   const payload = await apiRequest<BackendFactsPayload>(
     '/facts',
     {
@@ -16,7 +18,7 @@ export async function getFacts(userUid?: string | null): Promise<FactsResponse> 
         Accept: 'application/json',
       },
     },
-    userUid,
+    token,
   )
 
   return normalizeFactsResponse(payload)
@@ -29,13 +31,15 @@ export async function uploadPdfs(files: File[], userUid?: string | null): Promis
     formData.append(UPLOAD_FIELD_NAME, file)
   }
 
+  const token = userUid || auth?.currentUser?.uid
+
   const payload = await apiRequest<BackendUploadPayload>(
     '/upload',
     {
       method: 'POST',
       body: formData,
     },
-    userUid,
+    token,
   )
 
   return normalizeUploadResponse(payload)

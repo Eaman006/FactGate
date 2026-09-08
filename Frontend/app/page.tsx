@@ -10,11 +10,13 @@ import {
   CheckCircle2,
   ChevronRight,
   Copy,
+  CornerDownLeft,
   FileText,
   Filter,
   FolderOpen,
   Gauge,
   HelpCircle,
+  History,
   Inbox,
   Link2,
   Menu,
@@ -25,11 +27,13 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  Tag,
   Trash2,
   TriangleAlert,
   X,
   ZoomIn,
 } from 'lucide-react'
+
 
 import { Button } from '@/components/ui/button'
 import { Sidebar, type View } from '@/components/sidebar'
@@ -59,15 +63,22 @@ function Kpi({
   caption,
   icon: Icon,
   accent,
+  onClick,
 }: {
   label: string
   value: string
   caption: string
   icon: React.ElementType
   accent?: string
+  onClick?: () => void
 }) {
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
+    <div
+      onClick={onClick}
+      className={`rounded-lg border border-border bg-card p-4 transition-all ${
+        onClick ? 'cursor-pointer select-none hover:shadow-md hover:-translate-y-0.5' : ''
+      }`}
+    >
       <div className="flex items-start justify-between">
         <div>
           <p className="text-xs text-muted-foreground">{label}</p>
@@ -81,6 +92,7 @@ function Kpi({
     </div>
   )
 }
+
 
 function LoadingSkeleton() {
   return (
@@ -186,8 +198,64 @@ export default function Page() {
   }, [])
 
   const headerSearchRef = useRef<HTMLInputElement>(null)
+  const searchContainerRef = useRef<HTMLDivElement>(null)
+  const [isSearchFocused, setIsSearchFocused] = useState(false)
+  const [recentSearches, setRecentSearches] = useState<string[]>([])
+  const [selectedIndex, setSelectedIndex] = useState<number>(-1)
   const [healthStatus, setHealthStatus] = useState<'healthy' | 'offline' | 'checking'>('checking')
   const [showHealthTooltip, setShowHealthTooltip] = useState(false)
+
+  // Load recent searches from localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('factlayer_recent_searches')
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (Array.isArray(parsed)) {
+          setRecentSearches(parsed.slice(0, 5))
+        }
+      }
+    } catch {
+      // Ignore localStorage read error
+    }
+  }, [])
+
+  const saveRecentSearch = useCallback((term: string) => {
+    const trimmed = term.trim()
+    if (!trimmed) return
+    setRecentSearches((prev) => {
+      const next = [
+        trimmed,
+        ...prev.filter((item) => item.toLowerCase() !== trimmed.toLowerCase()),
+      ].slice(0, 5)
+      try {
+        localStorage.setItem('factlayer_recent_searches', JSON.stringify(next))
+      } catch {
+        // Ignore localStorage write error
+      }
+      return next
+    })
+  }, [])
+
+  const clearRecentSearches = useCallback(() => {
+    setRecentSearches([])
+    try {
+      localStorage.removeItem('factlayer_recent_searches')
+    } catch {
+      // Ignore localStorage remove error
+    }
+  }, [])
+
+  const handleSelectSearchTerm = useCallback(
+    (term: string) => {
+      setQuery(term)
+      saveRecentSearch(term)
+      setIsSearchFocused(false)
+      setSelectedIndex(-1)
+      headerSearchRef.current?.blur()
+    },
+    [saveRecentSearch],
+  )
 
   const [notifications, setNotifications] = useState<
     {
@@ -243,6 +311,7 @@ export default function Page() {
     const handleKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
+        setIsSearchFocused(true)
         headerSearchRef.current?.focus()
       }
     }
@@ -273,6 +342,21 @@ export default function Page() {
       clearInterval(interval)
     }
   }, [])
+
+  // Click outside to close search dropdown
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        searchContainerRef.current &&
+        !searchContainerRef.current.contains(e.target as Node)
+      ) {
+        setIsSearchFocused(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
 
   const [deletingDoc, setDeletingDoc] = useState<string | null>(null)
 
@@ -325,6 +409,98 @@ export default function Page() {
   const facts = data?.facts ?? []
   const documents = data?.documents ?? []
   const summary = data?.summary
+
+  // Generate predictive search suggestions from facts and documents
+  const suggestions = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return []
+
+    const list: {
+      id: string
+      text: string
+      type: 'fact' | 'document' | 'entity'
+      subtitle?: string
+    }[] = []
+    const seen = new Set<string>()
+
+    for (const doc of documents) {
+      if (doc.name.toLowerCase().includes(q) && !seen.has(doc.name.toLowerCase())) {
+        seen.add(doc.name.toLowerCase())
+        list.push({
+          id: `doc-${doc.name}`,
+          text: doc.name,
+          type: 'document',
+          subtitle: `${doc.facts || 0} facts extracted`,
+        })
+      }
+    }
+
+    for (const fact of facts) {
+      const nameLower = fact.name.toLowerCase()
+      if (nameLower.includes(q) && !seen.has(nameLower)) {
+        seen.add(nameLower)
+        list.push({
+          id: `fact-${fact.id}`,
+          text: fact.name,
+          type: 'fact',
+          subtitle: fact.normalizedValue,
+        })
+      }
+      const valLower = fact.normalizedValue.toLowerCase()
+      if (valLower.includes(q) && !seen.has(valLower)) {
+        seen.add(valLower)
+        list.push({
+          id: `val-${fact.id}`,
+          text: `${fact.name}: ${fact.normalizedValue}`,
+          type: 'entity',
+          subtitle: `Confidence: ${fact.confidence}`,
+        })
+      }
+    }
+
+    return list.slice(0, 7)
+  }, [query, facts, documents])
+
+  // Current navigable items list in command palette dropdown
+  const activeNavItems = useMemo(() => {
+    if (!query.trim()) {
+      return recentSearches.map((term) => ({ text: term, type: 'history' as const, subtitle: undefined }))
+    }
+    return suggestions.map((s) => ({ text: s.text, type: s.type, subtitle: s.subtitle }))
+  }, [query, recentSearches, suggestions])
+
+  // Reset selected highlight index when query or focus changes
+  useEffect(() => {
+    setSelectedIndex(-1)
+  }, [query, isSearchFocused])
+
+  // Keyboard navigation for dropdown menu
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!isSearchFocused) return
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      if (activeNavItems.length === 0) return
+      setSelectedIndex((prev) => (prev < activeNavItems.length - 1 ? prev + 1 : 0))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      if (activeNavItems.length === 0) return
+      setSelectedIndex((prev) => (prev > 0 ? prev - 1 : activeNavItems.length - 1))
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      if (selectedIndex >= 0 && selectedIndex < activeNavItems.length) {
+        handleSelectSearchTerm(activeNavItems[selectedIndex].text)
+      } else if (query.trim()) {
+        handleSelectSearchTerm(query)
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      setIsSearchFocused(false)
+      setSelectedIndex(-1)
+      headerSearchRef.current?.blur()
+    }
+  }
+
 
   const statusCounts = useMemo(() => {
     const counts: Record<FactStatus, number> = {
@@ -443,6 +619,7 @@ export default function Page() {
         onCloseMobile={sidebar.closeMobile}
         statusCounts={statusCounts}
         totalFacts={facts.length}
+        onNotify={notify}
       />
       {sidebar.mobileOpen && (
         <button
@@ -458,17 +635,15 @@ export default function Page() {
           <div className="flex items-center gap-3">
             <button
               type="button"
-              aria-label="Open navigation"
-              onClick={sidebar.openMobile}
-              className="rounded-md p-2 hover:bg-accent lg:hidden"
-            >
-              <Menu className="size-5" />
-            </button>
-            <button
-              type="button"
-              aria-label={sidebar.collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              onClick={sidebar.toggleCollapsed}
-              className="hidden rounded-md p-2 text-muted-foreground hover:bg-accent lg:inline-flex"
+              aria-label="Toggle navigation"
+              onClick={() => {
+                if (window.innerWidth < 1024) {
+                  sidebar.openMobile()
+                } else {
+                  sidebar.toggleCollapsed()
+                }
+              }}
+              className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <Menu className="size-5" />
             </button>
@@ -477,21 +652,32 @@ export default function Page() {
               <h1 className="text-sm font-semibold">{VIEW_LABELS[currentView]}</h1>
             </div>
           </div>
+
           <div className="flex items-center gap-3">
-            {/* Global Search Input with Ctrl+K / Cmd+K listener */}
-            <div className="relative hidden items-center rounded-md border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground focus-within:border-primary focus-within:ring-1 focus-within:ring-primary sm:flex">
+            {/* Global Command Palette Search */}
+            <div
+              ref={searchContainerRef}
+              className="relative hidden items-center rounded-md border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground focus-within:border-primary focus-within:ring-1 focus-within:ring-primary sm:flex"
+            >
               <Search className="size-3.5 shrink-0 text-muted-foreground" />
               <input
                 ref={headerSearchRef}
                 type="text"
                 value={query}
+                onFocus={() => setIsSearchFocused(true)}
+                onKeyDown={handleSearchKeyDown}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search facts, entities, documents..."
                 className="w-44 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground md:w-56"
               />
               {query ? (
                 <button
-                  onClick={() => setQuery('')}
+                  type="button"
+                  onClick={() => {
+                    setQuery('')
+                    setIsSearchFocused(true)
+                    headerSearchRef.current?.focus()
+                  }}
                   className="ml-1 rounded p-0.5 text-muted-foreground hover:bg-muted"
                   title="Clear search"
                 >
@@ -502,7 +688,109 @@ export default function Page() {
                   ⌘ K
                 </kbd>
               )}
+
+              {/* Command Palette Dropdown Menu */}
+              {isSearchFocused && (
+                <div className="absolute left-0 top-10 z-50 w-72 md:w-80 rounded-lg border border-border bg-white dark:bg-zinc-950 p-2 shadow-lg animate-in fade-in zoom-in-95">
+                  {/* Empty State: Recent Searches */}
+                  {!query.trim() && (
+                    <div>
+                      <div className="flex items-center justify-between px-2 py-1 border-b border-border mb-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                          <History className="size-3" /> Recent Searches
+                        </span>
+                        {recentSearches.length > 0 && (
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={clearRecentSearches}
+                            className="text-[10px] text-muted-foreground hover:text-rose-600 font-medium"
+                          >
+                            Clear history
+                          </button>
+                        )}
+                      </div>
+                      {recentSearches.length === 0 ? (
+                        <p className="px-2 py-3 text-[11px] text-muted-foreground text-center">
+                          No recent searches. Type to search facts & documents.
+                        </p>
+                      ) : (
+                        <div className="flex flex-col gap-0.5">
+                          {recentSearches.map((term, index) => (
+                            <button
+                              key={term}
+                              type="button"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => handleSelectSearchTerm(term)}
+                              className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 text-xs text-left transition-colors ${
+                                selectedIndex === index
+                                  ? 'bg-primary/10 text-primary font-medium'
+                                  : 'text-foreground hover:bg-muted'
+                              }`}
+                            >
+                              <History className="size-3.5 text-muted-foreground shrink-0" />
+                              <span className="truncate flex-1">{term}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Typing State: Predictive Suggestions */}
+                  {query.trim() !== '' && (
+                    <div>
+                      <div className="px-2 py-1 border-b border-border mb-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                          <Sparkles className="size-3 text-primary" /> Suggestions ({suggestions.length})
+                        </span>
+                      </div>
+                      {suggestions.length === 0 ? (
+                        <p className="px-2 py-3 text-[11px] text-muted-foreground text-center">
+                          No matching facts or documents found for “{query}”.
+                        </p>
+                      ) : (
+                        <div className="flex flex-col gap-0.5">
+                          {suggestions.map((item, index) => (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => handleSelectSearchTerm(item.text)}
+                              className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 text-xs text-left transition-colors ${
+                                selectedIndex === index
+                                  ? 'bg-primary/10 text-primary font-medium'
+                                  : 'text-foreground hover:bg-muted'
+                              }`}
+                            >
+                              <div className="flex size-5 shrink-0 items-center justify-center rounded bg-muted text-muted-foreground">
+                                {item.type === 'document' ? (
+                                  <FileText className="size-3" />
+                                ) : item.type === 'fact' ? (
+                                  <Sparkles className="size-3" />
+                                ) : (
+                                  <Tag className="size-3" />
+                                )}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate font-medium leading-none">{item.text}</p>
+                                {item.subtitle && (
+                                  <p className="mt-1 truncate text-[10px] text-muted-foreground leading-none">
+                                    {item.subtitle}
+                                  </p>
+                                )}
+                              </div>
+                              <CornerDownLeft className="size-3 text-muted-foreground opacity-50 ml-auto shrink-0" />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
+
 
             {/* Refresh Button */}
             <button
@@ -675,6 +963,7 @@ export default function Page() {
                           value={String(summary.totalDocuments)}
                           caption={`${summary.completeDocuments} complete · ${summary.processingDocuments} processing`}
                           icon={FileText}
+                          onClick={() => setCurrentView('documents')}
                         />
                         <Kpi
                           label="Facts extracted"
@@ -682,6 +971,7 @@ export default function Page() {
                           caption={`Across ${summary.totalDocuments} source document${summary.totalDocuments === 1 ? '' : 's'}`}
                           icon={Sparkles}
                           accent="bg-sky-50 text-sky-700"
+                          onClick={() => setCurrentView('facts')}
                         />
                         <Kpi
                           label="Relationships found"
@@ -689,6 +979,10 @@ export default function Page() {
                           caption={`${summary.corroboratedCount} corroborated · ${summary.resolvedCount} resolved`}
                           icon={Link2}
                           accent="bg-violet-50 text-violet-700"
+                          onClick={() => {
+                            setFilter('All')
+                            setCurrentView('relationships')
+                          }}
                         />
                         <Kpi
                           label="Needs review"
@@ -696,9 +990,14 @@ export default function Page() {
                           caption="Low confidence or conflicts"
                           icon={TriangleAlert}
                           accent="bg-amber-50 text-amber-700"
+                          onClick={() => {
+                            setFilter('review')
+                            setCurrentView('relationships')
+                          }}
                         />
                       </div>
                     )}
+
 
                     <div className="mt-7 grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(340px,.65fr)]">
                       <UploadZone
@@ -1299,6 +1598,7 @@ export default function Page() {
                         value={String(summary?.totalDocuments ?? documents.length)}
                         caption="Source PDF files in corpus"
                         icon={FileText}
+                        onClick={() => setCurrentView('documents')}
                       />
                       <Kpi
                         label="Extracted Facts"
@@ -1306,6 +1606,7 @@ export default function Page() {
                         caption="Total grounded facts extracted"
                         icon={Sparkles}
                         accent="bg-sky-50 text-sky-700"
+                        onClick={() => setCurrentView('facts')}
                       />
                       <Kpi
                         label="Cross-Doc Relationships"
@@ -1313,8 +1614,13 @@ export default function Page() {
                         caption="Identified relationship pairs"
                         icon={Link2}
                         accent="bg-violet-50 text-violet-700"
+                        onClick={() => {
+                          setFilter('All')
+                          setCurrentView('relationships')
+                        }}
                       />
                     </div>
+
 
                     <div className="rounded-lg border border-border bg-card">
                       <div className="flex items-center justify-between border-b border-border px-5 py-4">

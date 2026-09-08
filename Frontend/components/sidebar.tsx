@@ -1,6 +1,9 @@
 'use client'
 
+import { useState, useRef, useEffect } from 'react'
 import {
+  Building2,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -8,9 +11,12 @@ import {
   FolderOpen,
   LayoutDashboard,
   Link2,
+  LogOut,
   MoreHorizontal,
+  Plus,
   Settings2,
   Sparkles,
+  User,
   X,
 } from 'lucide-react'
 
@@ -38,6 +44,7 @@ interface SidebarProps {
   onCloseMobile: () => void
   statusCounts: Record<FactStatus, number>
   totalFacts: number
+  onNotify?: (message: string) => void
 }
 
 export function Sidebar({
@@ -51,11 +58,38 @@ export function Sidebar({
   onCloseMobile,
   statusCounts,
   totalFacts,
+  onNotify,
 }: SidebarProps) {
+  const [selectedWorkspace, setSelectedWorkspace] = useState('Acme Corp')
+  const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false)
+  const [showUserMenu, setShowUserMenu] = useState(false)
+
+  const workspaceRef = useRef<HTMLDivElement>(null)
+  const userRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (workspaceRef.current && !workspaceRef.current.contains(e.target as Node)) {
+        setShowWorkspaceMenu(false)
+      }
+      if (userRef.current && !userRef.current.contains(e.target as Node)) {
+        setShowUserMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
   const handleFilter = (next: FactFilter) => {
     onFilterChange(next)
     onCloseMobile()
   }
+
+  const workspaces = [
+    { name: 'Acme Corp', code: 'AC' },
+    { name: 'Global Enterprise', code: 'GE' },
+    { name: 'Financial Audit Group', code: 'FA' },
+  ]
 
   return (
     <aside
@@ -95,118 +129,160 @@ export function Sidebar({
       </button>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-      {!collapsed && (
-        <div className="mb-6 px-2">
-          <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-            Workspace
-          </p>
-          <button
-            type="button"
-            className="flex w-full items-center justify-between rounded-md border border-border bg-background px-3 py-2 text-left text-sm"
-          >
-            <span className="flex items-center gap-2">
-              <span className="flex size-5 items-center justify-center rounded bg-primary text-[9px] font-bold text-primary-foreground">
-                AC
-              </span>
-              Acme Corp
-            </span>
-            <ChevronDown className="size-3.5 text-muted-foreground" />
-          </button>
-        </div>
-      )}
-
-      <nav className="flex flex-col gap-1" aria-label="Main navigation">
-        {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
-          const isActive = currentView === id
-          return (
-            <button
-              key={id}
-              type="button"
-              title={label}
-              onClick={() => {
-                onViewChange(id)
-                onCloseMobile()
-              }}
-              className={cn(
-                'flex items-center rounded-md py-2.5 text-sm transition-colors',
-                collapsed ? 'justify-center px-0' : 'gap-3 px-3',
-                isActive
-                  ? 'bg-sidebar-accent font-semibold text-sidebar-accent-foreground ring-1 ring-primary/20'
-                  : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
-              )}
-            >
-              <Icon className={cn('size-4 shrink-0', isActive ? 'text-primary' : '')} />
-              {!collapsed && label}
-            </button>
-          )
-        })}
-      </nav>
-
-      <div className="mt-8">
         {!collapsed && (
-          <p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-            Relationship cases
-          </p>
+          <div ref={workspaceRef} className="relative mb-6 px-2">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              Workspace
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowWorkspaceMenu((prev) => !prev)}
+              className="flex w-full items-center justify-between rounded-md border border-border bg-background px-3 py-2 text-left text-sm hover:bg-accent/50 transition-colors"
+            >
+              <span className="flex items-center gap-2 truncate">
+                <span className="flex size-5 shrink-0 items-center justify-center rounded bg-primary text-[9px] font-bold text-primary-foreground">
+                  {selectedWorkspace === 'Acme Corp' ? 'AC' : selectedWorkspace === 'Global Enterprise' ? 'GE' : 'FA'}
+                </span>
+                <span className="truncate">{selectedWorkspace}</span>
+              </span>
+              <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+            </button>
+
+            {showWorkspaceMenu && (
+              <div className="absolute left-2 right-2 top-14 z-50 rounded-lg border border-border bg-popover p-1.5 shadow-xl animate-in fade-in zoom-in-95">
+                <div className="mb-1 px-2 py-1 text-[10px] font-semibold uppercase text-muted-foreground">
+                  Switch Workspace
+                </div>
+                {workspaces.map((ws) => (
+                  <button
+                    key={ws.name}
+                    type="button"
+                    onClick={() => {
+                      setSelectedWorkspace(ws.name)
+                      setShowWorkspaceMenu(false)
+                      onNotify?.(`Switched workspace to ${ws.name}`)
+                    }}
+                    className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-popover-foreground hover:bg-accent transition-colors"
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className="flex size-4 items-center justify-center rounded bg-muted text-[8px] font-bold">
+                        {ws.code}
+                      </span>
+                      {ws.name}
+                    </span>
+                    {selectedWorkspace === ws.name && <Check className="size-3.5 text-primary" />}
+                  </button>
+                ))}
+                <div className="my-1 border-t border-border" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowWorkspaceMenu(false)
+                    onNotify?.('Create workspace dialog opened')
+                  }}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                >
+                  <Plus className="size-3.5" />
+                  Create new workspace
+                </button>
+              </div>
+            )}
+          </div>
         )}
-        <div className="flex flex-col gap-1" role="group" aria-label="Filter facts by relationship">
-          <button
-            type="button"
-            title="All facts"
-            onClick={() => handleFilter('All')}
-            className={cn(
-              'flex items-center rounded-md py-2 text-left text-xs',
-              collapsed ? 'justify-center px-0' : 'gap-3 px-3',
-              filter === 'All'
-                ? 'bg-sidebar-accent font-medium text-foreground ring-1 ring-primary/20'
-                : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
-            )}
-            aria-pressed={filter === 'All'}
-          >
-            <Sparkles className="size-3.5 shrink-0" />
-            {!collapsed && (
-              <>
-                <span className="truncate">All facts</span>
-                <span className="ml-auto text-[10px] text-muted-foreground">{totalFacts}</span>
-              </>
-            )}
-          </button>
-          {(Object.keys(STATUS_META) as FactStatus[]).map((key) => {
-            const item = STATUS_META[key]
-            const Icon = item.icon
-            const isActive = filter === key
+
+        <nav className="flex flex-col gap-1" aria-label="Main navigation">
+          {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
+            const isActive = currentView === id
             return (
               <button
-                key={key}
+                key={id}
                 type="button"
-                title={item.label}
-                onClick={() => handleFilter(key)}
+                title={label}
+                onClick={() => {
+                  onViewChange(id)
+                  onCloseMobile()
+                }}
                 className={cn(
-                  'flex items-center rounded-md py-2 text-left text-xs',
+                  'flex items-center rounded-md py-2.5 text-sm transition-colors',
                   collapsed ? 'justify-center px-0' : 'gap-3 px-3',
                   isActive
-                    ? 'bg-sidebar-accent font-medium text-foreground ring-1 ring-primary/20'
+                    ? 'bg-sidebar-accent font-semibold text-sidebar-accent-foreground ring-1 ring-primary/20'
                     : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
                 )}
-                aria-pressed={isActive}
               >
-                <Icon className="size-3.5 shrink-0" />
-                {!collapsed && (
-                  <>
-                    <span className="truncate">{item.label}</span>
-                    <span className="ml-auto text-[10px] text-muted-foreground">{statusCounts[key]}</span>
-                  </>
-                )}
+                <Icon className={cn('size-4 shrink-0', isActive ? 'text-primary' : '')} />
+                {!collapsed && label}
               </button>
             )
           })}
+        </nav>
+
+        <div className="mt-8">
+          {!collapsed && (
+            <p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              Relationship cases
+            </p>
+          )}
+          <div className="flex flex-col gap-1" role="group" aria-label="Filter facts by relationship">
+            <button
+              type="button"
+              title="All facts"
+              onClick={() => handleFilter('All')}
+              className={cn(
+                'flex items-center rounded-md py-2 text-left text-xs',
+                collapsed ? 'justify-center px-0' : 'gap-3 px-3',
+                filter === 'All'
+                  ? 'bg-sidebar-accent font-medium text-foreground ring-1 ring-primary/20'
+                  : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
+              )}
+              aria-pressed={filter === 'All'}
+            >
+              <Sparkles className="size-3.5 shrink-0" />
+              {!collapsed && (
+                <>
+                  <span className="truncate">All facts</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground">{totalFacts}</span>
+                </>
+              )}
+            </button>
+            {(Object.keys(STATUS_META) as FactStatus[]).map((key) => {
+              const item = STATUS_META[key]
+              const Icon = item.icon
+              const isActive = filter === key
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  title={item.label}
+                  onClick={() => handleFilter(key)}
+                  className={cn(
+                    'flex items-center rounded-md py-2 text-left text-xs',
+                    collapsed ? 'justify-center px-0' : 'gap-3 px-3',
+                    isActive
+                      ? 'bg-sidebar-accent font-medium text-foreground ring-1 ring-primary/20'
+                      : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
+                  )}
+                  aria-pressed={isActive}
+                >
+                  <Icon className="size-3.5 shrink-0" />
+                  {!collapsed && (
+                    <>
+                      <span className="truncate">{item.label}</span>
+                      <span className="ml-auto text-[10px] text-muted-foreground">{statusCounts[key]}</span>
+                    </>
+                  )}
+                </button>
+              )
+            })}
+          </div>
         </div>
       </div>
-      </div>
 
-      <div className="mt-auto shrink-0 border-t border-sidebar-border pt-4">
+      <div ref={userRef} className="relative mt-auto shrink-0 border-t border-sidebar-border pt-4">
         <button
           type="button"
           title="Workspace settings"
+          onClick={() => onNotify?.('Workspace settings opened')}
           className={cn(
             'flex w-full items-center rounded-md py-2 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
             collapsed ? 'justify-center px-0' : 'gap-3 px-3',
@@ -215,27 +291,95 @@ export function Sidebar({
           <Settings2 className="size-4 shrink-0" />
           {!collapsed && 'Workspace settings'}
         </button>
-        {!collapsed && (
-          <div className="mt-3 flex items-center gap-2.5 px-3">
-            <div className="flex size-8 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+
+        {!collapsed ? (
+          <button
+            type="button"
+            onClick={() => setShowUserMenu((prev) => !prev)}
+            className="mt-3 flex w-full items-center gap-2.5 rounded-md p-1.5 hover:bg-sidebar-accent transition-colors text-left"
+          >
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
               EA
             </div>
-            <div className="min-w-0">
-              <p className="truncate text-xs font-medium">Eaman</p>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-medium text-foreground">Eaman</p>
               <p className="truncate text-[11px] text-muted-foreground">Engineering</p>
             </div>
-            <MoreHorizontal className="ml-auto size-4 text-muted-foreground" />
+            <MoreHorizontal className="ml-auto size-4 shrink-0 text-muted-foreground" />
+          </button>
+        ) : (
+          <div className="mt-3 flex justify-center">
+            <button
+              type="button"
+              onClick={() => setShowUserMenu((prev) => !prev)}
+              className="flex size-8 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary hover:ring-2 hover:ring-primary/20"
+            >
+              EA
+            </button>
           </div>
         )}
-        {collapsed && (
-          <div className="mt-3 flex justify-center">
-            <div className="flex size-8 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
-              EA
+
+        {showUserMenu && (
+          <div
+            className={cn(
+              'absolute z-50 rounded-lg border border-border bg-popover p-1.5 shadow-xl animate-in fade-in zoom-in-95',
+              collapsed ? 'bottom-2 left-16 w-48' : 'bottom-14 left-2 right-2',
+            )}
+          >
+            <div className="border-b border-border px-2 py-1.5 mb-1">
+              <p className="text-xs font-semibold text-popover-foreground">Eaman</p>
+              <p className="text-[10px] text-muted-foreground">eaman@factgate.io</p>
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                setShowUserMenu(false)
+                onNotify?.('Profile settings opened')
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-popover-foreground hover:bg-accent transition-colors"
+            >
+              <User className="size-3.5 text-muted-foreground" />
+              Profile Settings
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowUserMenu(false)
+                onNotify?.('Workspace preferences opened')
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-popover-foreground hover:bg-accent transition-colors"
+            >
+              <Building2 className="size-3.5 text-muted-foreground" />
+              Workspace Preferences
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowUserMenu(false)
+                onNotify?.('API token settings opened')
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-popover-foreground hover:bg-accent transition-colors"
+            >
+              <Settings2 className="size-3.5 text-muted-foreground" />
+              API Tokens & Keys
+            </button>
+            <div className="my-1 border-t border-border" />
+            <button
+              type="button"
+              onClick={() => {
+                setShowUserMenu(false)
+                onNotify?.('User logged out')
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 transition-colors"
+            >
+              <LogOut className="size-3.5" />
+              Log out
+            </button>
           </div>
         )}
       </div>
     </aside>
   )
 }
+
 
